@@ -14,7 +14,7 @@ const RoomController = {
     if (!parsed.success) return invalidPayload(res);
     try {
       return res.json(
-        await RoomService.createRoom(parsed.data.username, parsed.data.isPlaying),
+        await RoomService.createRoom(parsed.data.username, parsed.data.isPlaying, parsed.data.gameVersion),
       );
     } catch (error) {
       return next(error);

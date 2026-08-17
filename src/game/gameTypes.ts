@@ -22,9 +22,11 @@ export interface Theme {
 
 export type TotalRounds = 3 | 5 | 10;
 export type ChoosingDurationSeconds = 180 | 360 | 540;
+export type GameVersion = "v1" | "v2";
 export interface GameSettings {
   totalRounds: TotalRounds;
   choosingDurationSeconds: ChoosingDurationSeconds;
+  selectedCategories?: string[];
 }
 export const DEFAULT_GAME_SETTINGS: GameSettings = {
   totalRounds: 10,
@@ -41,7 +43,17 @@ export function normalizeGameSettings(settings?: Partial<GameSettings> | null): 
   )
     ? settings!.choosingDurationSeconds as ChoosingDurationSeconds
     : DEFAULT_GAME_SETTINGS.choosingDurationSeconds;
-  return { totalRounds, choosingDurationSeconds };
+  const selectedCategories = Array.isArray(settings?.selectedCategories)
+    ? [...new Set(settings.selectedCategories.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))]
+    : undefined;
+  return { totalRounds, choosingDurationSeconds, ...(selectedCategories ? { selectedCategories } : {}) };
+}
+
+export interface GameCategory {
+  id: string;
+  label: string;
+  description: string;
+  examples: Array<{ id: string; title: string }>;
 }
 export const THEME_POOL_SIZE = 20;
 export const CHOOSING_RECONNECT_GRACE_MS = 30 * 1000;

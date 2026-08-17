@@ -10,6 +10,7 @@ import {
   THEME_POOL_SIZE,
   ThemeReaction,
   GameSettings,
+  GameVersion,
   TotalRounds,
   ChoosingDurationSeconds,
   normalizeGameSettings,
@@ -54,7 +55,7 @@ export default class RoomService {
     return roomCode.replace(/\s+/g, "").toUpperCase();
   }
 
-  static async createRoom(username: string, isPlaying = true) {
+  static async createRoom(username: string, isPlaying = true, gameVersion: GameVersion = "v1") {
     const playerId = generateId("player");
     const playerToken = generateId("token");
     const hostPlayer: Player = {
@@ -68,9 +69,14 @@ export default class RoomService {
       lastSeenAt: Date.now(),
       participationStatus: "ACTIVE",
     };
-    const room = await repo.createRoom(hostPlayer);
+    const room = await repo.createRoom(hostPlayer, gameVersion);
+    if (gameVersion === "v2") {
+      const categories = await themeRepo.listCategories();
+      room.settings = { ...room.settings, selectedCategories: categories.map((category) => category.id) };
+      await repo.saveRoom(room.roomCode, room);
+    }
     log.info({ roomCode: room.roomCode, playerId }, "room created");
-    return { roomCode: room.roomCode, player: publicPlayer(hostPlayer), playerToken };
+    return { roomCode: room.roomCode, player: publicPlayer(hostPlayer), playerToken, gameVersion };
   }
 
   static async joinRoom(roomCode: string, username: string) {
@@ -96,7 +102,7 @@ export default class RoomService {
     room.players[playerId] = player;
     await repo.saveRoom(normalizedCode, room);
     log.info({ roomCode: normalizedCode, playerId }, "player joined");
-    return { roomCode: normalizedCode, player: publicPlayer(player), playerToken };
+    return { roomCode: normalizedCode, player: publicPlayer(player), playerToken, gameVersion: room.gameVersion || "v1" };
   }
 
   static async authenticatePlayer(roomCode: string, playerId: string, playerToken: string) {
@@ -226,10 +232,18 @@ export default class RoomService {
     ) {
       throw Object.assign(new Error("Invalid game settings"), { code: "INVALID_PAYLOAD" });
     }
-    room.settings = { ...settings };
+    const normalizedSettings = normalizeGameSettings(settings);
+    if ((room.gameVersion || "v1") === "v2") {
+      const categories = await themeRepo.listCategories();
+      const validIds = new Set(categories.map((category) => category.id));
+      const selected = normalizedSettings.selectedCategories || [];
+      if (selected.length < 2) throw Object.assign(new Error("Choose at least 2 categories"), { code: "MIN_CATEGORIES_REQUIRED" });
+      if (selected.some((category) => !validIds.has(category))) throw Object.assign(new Error("Invalid game category"), { code: "INVALID_CATEGORY" });
+    }
+    room.settings = normalizedSettings;
     await repo.saveRoom(normalizedCode, room);
     if (room.sessionId) {
-      await sessionRepo.update(room.sessionId, { $set: { settings: { ...settings } } });
+      await sessionRepo.update(room.sessionId, { $set: { settings: { ...normalizedSettings } } });
     }
     return this.toPublicState(room);
   }
@@ -259,6 +273,7 @@ export default class RoomService {
       roomCode: normalizedCode,
       createdAt: new Date(),
       status: "LOBBY",
+      gameVersion: room.gameVersion || "v1",
       settings: { ...settings },
       players: Object.values(room.players).map(publicPlayer),
       rounds: [],
@@ -295,7 +310,20 @@ export default class RoomService {
       });
     }
     room.settings = normalizeGameSettings(room.settings);
-    const themePool = await themeRepo.randomPool(THEME_POOL_SIZE);
+    let themePool;
+    if ((room.gameVersion || "v1") === "v2") {
+      const categories = await themeRepo.listCategories();
+      const validIds = new Set(categories.map((category) => category.id));
+      const selected = (room.settings.selectedCategories || []).filter((category) => validIds.has(category));
+      room.settings = { ...room.settings, selectedCategories: selected };
+      if (selected.length < 2) {
+        await repo.saveRoom(normalizedCode, room);
+        throw Object.assign(new Error("Choose at least 2 categories"), { code: "MIN_CATEGORIES_REQUIRED" });
+      }
+      themePool = await themeRepo.balancedPool(selected, THEME_POOL_SIZE);
+    } else {
+      themePool = await themeRepo.randomPool(THEME_POOL_SIZE);
+    }
     if (themePool.length < room.settings.totalRounds) {
       throw Object.assign(new Error("Not enough eligible themes"), {
         code: "NOT_ENOUGH_THEMES",
@@ -335,13 +363,14 @@ export default class RoomService {
         roomCode: normalizedCode,
         createdAt: new Date(),
         status: "ACTIVE",
+        gameVersion: room.gameVersion || "v1",
         settings: { ...room.settings },
         players: Object.values(room.players).map(publicPlayer),
         rounds: [],
       });
     } else {
       await sessionRepo.update(room.sessionId, {
-        $set: { status: "ACTIVE", settings: { ...room.settings }, players: Object.values(room.players).map(publicPlayer) },
+        $set: { status: "ACTIVE", gameVersion: room.gameVersion || "v1", settings: { ...room.settings }, players: Object.values(room.players).map(publicPlayer) },
       });
     }
     await repo.saveRoom(normalizedCode, room);
@@ -384,7 +413,9 @@ export default class RoomService {
         ...room.game.rejectedThemeIds,
         room.game.currentTheme.id,
       ];
-      const extraThemes = await themeRepo.randomPool(THEME_POOL_SIZE, seenIds);
+      const extraThemes = (room.gameVersion || "v1") === "v2"
+        ? await themeRepo.balancedPool(room.settings.selectedCategories || [], THEME_POOL_SIZE, seenIds)
+        : await themeRepo.randomPool(THEME_POOL_SIZE, seenIds);
       if (extraThemes.length === 0) {
         throw Object.assign(new Error("Theme pool exhausted"), { code: "THEME_POOL_EXHAUSTED" });
       }
@@ -710,7 +741,17 @@ export default class RoomService {
   private static async getRoomWithCleanup(roomCode: string): Promise<Room | null> {
     const room = await repo.getRoom(roomCode);
     if (!room) return null;
+    room.gameVersion ||= "v1";
     room.settings = normalizeGameSettings(room.settings);
+    let settingsChanged = false;
+    if (room.gameVersion === "v2") {
+      const validIds = new Set((await themeRepo.listCategories()).map((category) => category.id));
+      const selectedCategories = (room.settings.selectedCategories || []).filter((category) => validIds.has(category));
+      if (selectedCategories.length !== (room.settings.selectedCategories || []).length) {
+        room.settings = { ...room.settings, selectedCategories };
+        settingsChanged = true;
+      }
+    }
     const now = Date.now();
     const expired = Object.values(room.players).filter(
       (player) =>
@@ -719,7 +760,10 @@ export default class RoomService {
         player.disconnectedAt !== null &&
         this.isReconnectExpired(room, player.disconnectedAt, now),
     );
-    if (expired.length === 0) return room;
+    if (expired.length === 0) {
+      if (settingsChanged) await repo.saveRoom(roomCode, room);
+      return room;
+    }
     for (const player of expired) delete room.players[player.playerId];
     await Promise.all([
       repo.saveRoom(roomCode, room),
@@ -740,6 +784,7 @@ export default class RoomService {
     return {
       roomCode: room.roomCode,
       status: room.status,
+      gameVersion: room.gameVersion || "v1",
       host: publicPlayer(host),
       players: Object.values(room.players)
         .filter((player) => !player.isHost)

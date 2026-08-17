@@ -1,12 +1,13 @@
 import mongoose from "mongoose";
 import { UpdateQuery } from "mongoose";
-import { GameSettings } from "../game/gameTypes";
+import { GameSettings, GameVersion } from "../game/gameTypes";
 
 export interface GameSessionRecord {
   sessionId: string;
   roomCode: string;
   createdAt: Date;
   status: "LOBBY" | "ACTIVE" | "FINISHED";
+  gameVersion: GameVersion;
   settings: GameSettings;
   finishedAt?: Date;
   players: unknown[];
@@ -21,7 +22,8 @@ const Schema = new mongoose.Schema(
     roomCode: String,
     createdAt: Date,
     status: { type: String, required: true, enum: ["LOBBY", "ACTIVE", "FINISHED"] },
-    settings: { totalRounds: Number, choosingDurationSeconds: Number },
+    gameVersion: { type: String, required: true, enum: ["v1", "v2"], default: "v1" },
+    settings: { totalRounds: Number, choosingDurationSeconds: Number, selectedCategories: [String] },
     finishedAt: Date,
     players: Array,
     rounds: Array,

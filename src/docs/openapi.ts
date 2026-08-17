@@ -8,7 +8,7 @@ export const openApiDocument = {
   },
   "x-socket-events": {
     "game:start": {
-      description: "Host inicia a partida quando existem pelo menos 3 jogadores participantes na sala.",
+      description: "Host inicia a partida quando existem pelo menos 3 jogadores; sessões V2 também exigem ao menos 2 categorias válidas.",
     },
     "game:settings:update": {
       description: "Host atualiza os presets da partida enquanto a sala está no lobby.",
@@ -168,6 +168,18 @@ export const openApiDocument = {
         responses: { "200": { description: "Faixas do álbum", content: { "application/json": { schema: { type: "object", properties: { albumId: { type: "string" }, items: { type: "array", items: { $ref: "#/components/schemas/SpotifyTrack" } } } } } } }, "503": { $ref: "#/components/responses/InternalError" } },
       },
     },
+    "/game-categories": {
+      get: {
+        tags: ["Rooms"],
+        summary: "Lista categorias disponíveis com até 3 exemplos reais",
+        responses: {
+          "200": {
+            description: "Categorias derivadas dos temas existentes",
+            content: { "application/json": { schema: { type: "object", required: ["items"], properties: { items: { type: "array", items: { $ref: "#/components/schemas/GameCategory" } } } } } },
+          },
+        },
+      },
+    },
     "/youtube/metadata": {
       get: {
         tags: ["YouTube"],
@@ -250,6 +262,7 @@ export const openApiDocument = {
         properties: {
           username: { type: "string", minLength: 1, maxLength: 32, example: "Ana" },
           isPlaying: { type: "boolean", default: true },
+          gameVersion: { type: "string", enum: ["v1", "v2"], default: "v1" },
         },
       },
       JoinRoomRequest: {
@@ -273,7 +286,7 @@ export const openApiDocument = {
       },
       RoomState: {
         type: "object",
-        required: ["roomCode", "status", "host", "players", "settings"],
+        required: ["roomCode", "status", "gameVersion", "host", "players", "settings"],
         properties: {
           roomCode: { type: "string", example: "R78X" },
           status: {
@@ -289,6 +302,7 @@ export const openApiDocument = {
               "GAME_SUMMARY",
             ],
           },
+          gameVersion: { type: "string", enum: ["v1", "v2"] },
           host: { $ref: "#/components/schemas/PublicPlayer" },
           players: {
             type: "array",
@@ -318,6 +332,15 @@ export const openApiDocument = {
         properties: {
           totalRounds: { type: "integer", enum: [3, 5, 10], default: 10 },
           choosingDurationSeconds: { type: "integer", enum: [180, 360, 540], default: 180 },
+          selectedCategories: { type: "array", minItems: 2, uniqueItems: true, items: { type: "string" }, description: "Obrigatório para sessões V2" },
+        },
+      },
+      GameCategory: {
+        type: "object",
+        required: ["id", "label", "description", "examples"],
+        properties: {
+          id: { type: "string" }, label: { type: "string" }, description: { type: "string" },
+          examples: { type: "array", maxItems: 3, items: { type: "object", required: ["id", "title"], properties: { id: { type: "string" }, title: { type: "string" } } } },
         },
       },
       PublicGameState: {
