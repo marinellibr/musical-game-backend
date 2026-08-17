@@ -163,7 +163,7 @@ export const openApiDocument = {
     },
     "/spotify/albums/{albumId}/tracks": {
       get: {
-        tags: ["Spotify"], summary: "Lista as faixas permitidas de um álbum",
+        tags: ["Spotify"], summary: "Lista as faixas permitidas de um álbum com nome e imagem da capa",
         parameters: [{ name: "albumId", in: "path", required: true, schema: { type: "string" } }],
         responses: { "200": { description: "Faixas do álbum", content: { "application/json": { schema: { type: "object", properties: { albumId: { type: "string" }, items: { type: "array", items: { $ref: "#/components/schemas/SpotifyTrack" } } } } } } }, "503": { $ref: "#/components/responses/InternalError" } },
       },
@@ -367,7 +367,7 @@ export const openApiDocument = {
           items: { type: "array", items: { $ref: "#/components/schemas/SpotifyTrack" } },
         },
       },
-      SpotifyTrack: { type: "object", required: ["trackId", "title"], properties: { trackId: { type: "string" }, trackUri: { type: "string" }, title: { type: "string" }, artist: { type: "string" }, album: { type: "string" }, albumId: { type: "string" }, image: { type: "string", format: "uri" } } },
+      SpotifyTrack: { type: "object", required: ["trackId", "title"], properties: { trackId: { type: "string" }, trackUri: { type: "string" }, title: { type: "string" }, artist: { type: "string" }, album: { type: "string" }, albumId: { type: "string" }, image: { type: "string", format: "uri", description: "Imagem de capa da faixa ou do álbum" } } },
       LeaderboardEntry: { type: "object", required: ["playerId", "username", "totalLikes", "totalDislikes", "voteBalance", "position"], properties: { playerId: { type: "string" }, username: { type: "string" }, totalLikes: { type: "integer", minimum: 0 }, totalDislikes: { type: "integer", minimum: 0 }, voteBalance: { type: "integer" }, position: { type: "integer", minimum: 1 } } },
       YouTubeMetadataResponse: {
         type: "object",

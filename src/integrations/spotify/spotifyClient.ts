@@ -75,8 +75,20 @@ export interface SpotifyTrack {
   album?: { id?: string; name?: string; images?: Array<{ url?: string }> };
 }
 
+export interface SpotifyAlbumSummary {
+  id?: string;
+  name?: string;
+  images?: Array<{ url?: string }>;
+}
+
 export async function getSpotifyAlbumTracks(albumId: string, signal?: AbortSignal) {
   const token = await getSpotifyAccessToken(signal);
-  const response = await spotifyRequest(`${SPOTIFY_API_URL}/albums/${encodeURIComponent(albumId)}/tracks?limit=50`, { headers: { Authorization: `Bearer ${token}` }, signal }, "Spotify album tracks");
-  return (await response.json()) as { items?: SpotifyTrack[] };
+  const response = await spotifyRequest(`${SPOTIFY_API_URL}/albums/${encodeURIComponent(albumId)}`, { headers: { Authorization: `Bearer ${token}` }, signal }, "Spotify album tracks");
+  const album = (await response.json()) as SpotifyAlbumSummary & {
+    tracks?: { items?: SpotifyTrack[] };
+  };
+  return {
+    album: { id: album.id, name: album.name, images: album.images },
+    items: album.tracks?.items || [],
+  };
 }
