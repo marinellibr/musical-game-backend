@@ -7,6 +7,7 @@ export interface Player {
   connected: boolean;
   disconnectedAt: number | null;
   lastSeenAt: number;
+  participationStatus: "ACTIVE" | "WAITING_NEXT_ROUND";
 }
 
 export interface Room {
@@ -25,6 +26,7 @@ export interface PublicPlayer {
   isHost: boolean;
   isPlaying: boolean;
   connected: boolean;
+  participationStatus: "ACTIVE" | "WAITING_NEXT_ROUND";
 }
 
 export interface RoomPublicState {

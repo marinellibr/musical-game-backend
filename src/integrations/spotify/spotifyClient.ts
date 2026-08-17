@@ -63,6 +63,20 @@ export async function spotifySearch(
     "Spotify search",
   );
   return (await response.json()) as {
-    tracks?: { items?: Array<{ id?: string; name?: string }> };
+    tracks?: { items?: SpotifyTrack[] };
   };
+}
+
+export interface SpotifyTrack {
+  id?: string;
+  uri?: string;
+  name?: string;
+  artists?: Array<{ name?: string }>;
+  album?: { id?: string; name?: string; images?: Array<{ url?: string }> };
+}
+
+export async function getSpotifyAlbumTracks(albumId: string, signal?: AbortSignal) {
+  const token = await getSpotifyAccessToken(signal);
+  const response = await spotifyRequest(`${SPOTIFY_API_URL}/albums/${encodeURIComponent(albumId)}/tracks?limit=50`, { headers: { Authorization: `Bearer ${token}` }, signal }, "Spotify album tracks");
+  return (await response.json()) as { items?: SpotifyTrack[] };
 }

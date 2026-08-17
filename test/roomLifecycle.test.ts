@@ -26,6 +26,9 @@ vi.mock("../src/repositories/MongoThemeRepository", () => ({
     }
   },
 }));
+vi.mock("../src/integrations/spotify/spotifyClient", () => ({
+  getSpotifyAlbumTracks: async () => ({ items: [{ id: "allowed-track" }] }),
+}));
 
 import RoomService from "../src/rooms/RoomService";
 
@@ -241,5 +244,52 @@ describe("room player lifecycle", () => {
     const before = await RoomService.startListening(host.roomCode, host.player.playerId);
     const restored = await RoomService.getListeningState(host.roomCode);
     expect(restored).toEqual(before);
+  });
+
+  it("keeps an active player reconnectable beyond 90 seconds during choosing", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    const player = await RoomService.joinRoom(host.roomCode, "Player");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    await RoomService.setPlayerConnected(host.roomCode, player.player.playerId, true);
+    await RoomService.setPlayerConnected(host.roomCode, player.player.playerId, false);
+    vi.advanceTimersByTime(120_000);
+    await expect(RoomService.authenticatePlayer(host.roomCode, player.player.playerId, player.playerToken)).resolves.toMatchObject({ player: { playerId: player.player.playerId } });
+  });
+
+  it("marks late joins as waiting and blocks their submission", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    await RoomService.joinRoom(host.roomCode, "Active");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    const late = await RoomService.joinRoom(host.roomCode, "Late");
+    expect(late.player.participationStatus).toBe("WAITING_NEXT_ROUND");
+    await expect(RoomService.submitChoice(host.roomCode, late.player.playerId, { source: "SPOTIFY", title: "Late song", spotifyTrackId: "late" })).rejects.toMatchObject({ code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
+  });
+
+  it("activates waiting players before the next round", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    await RoomService.joinRoom(host.roomCode, "Active");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    const late = await RoomService.joinRoom(host.roomCode, "Late");
+    const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    persisted.status = "ROUND_RESULTS";
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(persisted));
+    const next = await RoomService.prepareNextRound(host.roomCode, host.player.playerId);
+    expect(next.players.find((player) => player.playerId === late.player.playerId)?.participationStatus).toBe("ACTIVE");
+  });
+
+  it("allows only tracks from the configured album", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    const player = await RoomService.joinRoom(host.roomCode, "Player");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    persisted.game.currentTheme.type = "ALBUM";
+    persisted.game.currentTheme.sourceReference = { provider: "SPOTIFY", resourceType: "ALBUM", id: "album-1" };
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(persisted));
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    await expect(RoomService.submitChoice(host.roomCode, player.player.playerId, { source: "SPOTIFY", title: "Allowed", spotifyTrackId: "allowed-track" })).resolves.toMatchObject({ spotifyTrackId: "allowed-track" });
+    await expect(RoomService.submitChoice(host.roomCode, player.player.playerId, { source: "SPOTIFY", title: "Blocked", spotifyTrackId: "other-track" })).rejects.toMatchObject({ code: "TRACK_NOT_IN_ALBUM" });
   });
 });

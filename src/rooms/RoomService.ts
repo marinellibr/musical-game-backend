@@ -1,6 +1,7 @@
 import logger from "pino";
 import RedisRoomRepository from "../repositories/RedisRoomRepository";
 import { generateId } from "../utils/ids";
+import { getSpotifyAlbumTracks } from "../integrations/spotify/spotifyClient";
 import { Player, Room, RoomPublicState } from "./roomTypes";
 import { PLAYER_RECONNECT_TTL_MS } from "../config/env";
 import MongoThemeRepository from "../repositories/MongoThemeRepository";
@@ -14,6 +15,8 @@ import {
   SubmissionGroup,
   SubmissionInput,
   VotingView,
+  CHOOSING_DURATION_MS,
+  CHOOSING_RECONNECT_GRACE_MS,
 } from "../game/gameTypes";
 
 const repo = new RedisRoomRepository();
@@ -33,6 +36,7 @@ function publicPlayer(player: Player) {
     isHost: player.isHost,
     isPlaying: player.isPlaying,
     connected: player.connected,
+    participationStatus: player.participationStatus || "ACTIVE",
   };
 }
 
@@ -53,6 +57,7 @@ export default class RoomService {
       connected: false,
       disconnectedAt: null,
       lastSeenAt: Date.now(),
+      participationStatus: "ACTIVE",
     };
     const room = await repo.createRoom(hostPlayer);
     log.info({ roomCode: room.roomCode, playerId }, "room created");
@@ -77,6 +82,7 @@ export default class RoomService {
       connected: false,
       disconnectedAt: null,
       lastSeenAt: Date.now(),
+      participationStatus: room.status === "LOBBY" ? "ACTIVE" : "WAITING_NEXT_ROUND",
     };
     room.players[playerId] = player;
     await repo.saveRoom(normalizedCode, room);
@@ -108,7 +114,7 @@ export default class RoomService {
     if (
       !player.connected &&
       player.disconnectedAt !== null &&
-      Date.now() - player.disconnectedAt > PLAYER_RECONNECT_TTL_MS
+      this.isReconnectExpired(room, player.disconnectedAt)
     ) {
       if (player.isHost) {
         player.playerToken = "";
@@ -238,6 +244,9 @@ export default class RoomService {
       listeningIndex: 0,
       votingEnabled: true,
       votes: {},
+      roundStartedAt: null,
+      roundEndsAt: null,
+      roundParticipantIds: [],
     };
     room.status = "THEME_REVEAL";
     await repo.saveRoom(normalizedCode, room);
@@ -307,6 +316,11 @@ export default class RoomService {
     }
     room.game.playedThemeIds.push(room.game.currentTheme.id);
     room.game.phase = "CHOOSING";
+    room.game.roundStartedAt = Date.now();
+    room.game.roundEndsAt = room.game.roundStartedAt + CHOOSING_DURATION_MS;
+    room.game.roundParticipantIds = Object.values(room.players)
+      .filter((player) => player.isPlaying && (player.participationStatus || "ACTIVE") === "ACTIVE")
+      .map((player) => player.playerId);
     room.status = "CHOOSING";
     await repo.saveRoom(normalizedCode, room);
     return this.toPublicState(room);
@@ -317,9 +331,18 @@ export default class RoomService {
     const room = await this.getRoomWithCleanup(normalizedCode);
     if (!room) throw roomNotFound();
     const player = room.players[playerId];
-    if (!player?.isPlaying) throw Object.assign(new Error("Player cannot submit"), { code: "FORBIDDEN" });
+    if (!player?.isPlaying || (player.participationStatus || "ACTIVE") !== "ACTIVE" || !room.game?.roundParticipantIds.includes(playerId)) throw Object.assign(new Error("Player is not active this round"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
     if (!room.game || room.status !== "CHOOSING") throw Object.assign(new Error("Submissions are closed"), { code: "INVALID_PHASE" });
+    if (!room.game.roundEndsAt || Date.now() >= room.game.roundEndsAt) throw Object.assign(new Error("Submission time has ended"), { code: "SUBMISSIONS_CLOSED" });
     this.validateSubmission(input, room.game.currentTheme.type);
+    if (room.game.currentTheme.type === "ALBUM") {
+      const albumId = room.game.currentTheme.sourceReference?.id;
+      if (!albumId) throw Object.assign(new Error("Theme album is not configured"), { code: "INVALID_THEME" });
+      const albumTracks = await getSpotifyAlbumTracks(albumId);
+      if (!albumTracks.items?.some((track) => track.id === input.spotifyTrackId)) {
+        throw Object.assign(new Error("Track does not belong to the theme album"), { code: "TRACK_NOT_IN_ALBUM" });
+      }
+    }
     const submission: Submission = {
       ...input,
       startTime: input.startTime ?? 0,
@@ -336,8 +359,8 @@ export default class RoomService {
   static async startListening(roomCode: string, requesterId: string): Promise<PublicListeningState> {
     const room = await this.requireHostPhase(roomCode, requesterId, "CHOOSING");
     if (!room.game) throw new Error("Game state missing");
-    const playingIds = Object.values(room.players).filter((player) => player.isPlaying).map((player) => player.playerId);
-    if (playingIds.some((id) => !room.game?.submissions[id])) {
+    const playingIds = room.game.roundParticipantIds;
+    if (Date.now() < (room.game.roundEndsAt || 0) && playingIds.some((id) => !room.game?.submissions[id])) {
       throw Object.assign(new Error("Waiting for player submissions"), { code: "SUBMISSIONS_PENDING" });
     }
     room.game.submissionGroups = this.shuffleGroups(this.groupSubmissions(Object.values(room.game.submissions)));
@@ -392,9 +415,9 @@ export default class RoomService {
         .filter((group) => group.submissions.some((submission) => submission.playerId !== playerId))
         .map((group) => ({ groupId: group.groupId, media: group.publicMedia, canVote: player.isPlaying })),
       hasVoted: Boolean(room.game.votes[playerId]),
-      canVote: player.isPlaying,
+      canVote: player.isPlaying && room.game.roundParticipantIds.includes(playerId),
       votedPlayers: player.isHost ? Object.keys(room.game.votes) : [],
-      eligiblePlayersCount: Object.values(room.players).filter((item) => item.isPlaying).length,
+      eligiblePlayersCount: room.game.roundParticipantIds.length,
     };
   }
 
@@ -402,7 +425,7 @@ export default class RoomService {
     const normalizedCode = this.normalizeRoomCode(roomCode);
     const room = await this.getRoomWithCleanup(normalizedCode);
     if (!room?.game || room.status !== "VOTING") throw Object.assign(new Error("Voting is closed"), { code: "INVALID_PHASE" });
-    if (!room.players[playerId]?.isPlaying) throw Object.assign(new Error("Player cannot vote"), { code: "FORBIDDEN" });
+    if (!room.players[playerId]?.isPlaying || !room.game.roundParticipantIds.includes(playerId)) throw Object.assign(new Error("Player is not active this round"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
     if (room.game.votes[playerId]) throw Object.assign(new Error("Player already voted"), { code: "ALREADY_VOTED" });
     if (vote.likedGroupId === vote.dislikedGroupId) throw Object.assign(new Error("Votes must target different groups"), { code: "INVALID_VOTE" });
     const liked = room.game.submissionGroups.find((group) => group.groupId === vote.likedGroupId);
@@ -499,6 +522,21 @@ export default class RoomService {
     return room?.game?.reactions[playerId] ?? null;
   }
 
+  static async prepareNextRound(roomCode: string, requesterId: string): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (!room.players[requesterId]?.isHost) throw Object.assign(new Error("Host only action"), { code: "FORBIDDEN" });
+    if (!room.game || room.status !== "ROUND_RESULTS") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
+    const nextTheme = room.game.themePool[room.game.themePoolIndex + 1];
+    if (!nextTheme) throw Object.assign(new Error("Theme pool exhausted"), { code: "THEME_POOL_EXHAUSTED" });
+    Object.values(room.players).forEach((player) => { if (player.participationStatus === "WAITING_NEXT_ROUND") player.participationStatus = "ACTIVE"; });
+    room.game.round += 1; room.game.themePoolIndex += 1; room.game.currentTheme = nextTheme; room.game.phase = "THEME_SELECTION"; room.game.reactions = {}; room.game.submissions = {}; room.game.submissionGroups = []; room.game.votes = {}; room.game.roundStartedAt = null; room.game.roundEndsAt = null; room.game.roundParticipantIds = [];
+    room.status = "THEME_REVEAL";
+    await repo.saveRoom(normalizedCode, room);
+    return this.toPublicState(room);
+  }
+
   static async cleanupExpiredPlayers(roomCode: string): Promise<RoomPublicState> {
     const normalizedCode = this.normalizeRoomCode(roomCode);
     const room = await this.getRoomWithCleanup(normalizedCode);
@@ -515,7 +553,7 @@ export default class RoomService {
         !player.isHost &&
         !player.connected &&
         player.disconnectedAt !== null &&
-        now - player.disconnectedAt > PLAYER_RECONNECT_TTL_MS,
+        this.isReconnectExpired(room, player.disconnectedAt, now),
     );
     if (expired.length === 0) return room;
     for (const player of expired) delete room.players[player.playerId];
@@ -551,9 +589,20 @@ export default class RoomService {
             likes: Object.values(room.game.reactions).filter((value) => value === "like").length,
             dislikes: Object.values(room.game.reactions).filter((value) => value === "dislike").length,
             reactedPlayers: Object.keys(room.game.reactions).length,
-            playersCount: Object.values(room.players).filter((player) => player.isPlaying).length,
+            playersCount: room.game.roundParticipantIds.length || Object.values(room.players).filter((player) => player.isPlaying && (player.participationStatus || "ACTIVE") === "ACTIVE").length,
+            roundStartedAt: room.game.roundStartedAt,
+            roundEndsAt: room.game.roundEndsAt,
+            submittedCount: room.game.roundParticipantIds.filter((id) => Boolean(room.game?.submissions[id])).length,
+            waitingNextRoundCount: Object.values(room.players).filter((player) => player.participationStatus === "WAITING_NEXT_ROUND").length,
           }
         : null,
     };
+  }
+
+  private static isReconnectExpired(room: Room, disconnectedAt: number, now = Date.now()): boolean {
+    if (room.status === "CHOOSING" && room.game?.roundEndsAt) {
+      return now > room.game.roundEndsAt + CHOOSING_RECONNECT_GRACE_MS;
+    }
+    return now - disconnectedAt > PLAYER_RECONNECT_TTL_MS;
   }
 }

@@ -156,6 +156,17 @@ export function initSocket(httpServer: HttpServer) {
         await runRoomAction(roomCode, async () => {
           const state = await RoomService.startRound(roomCode, requesterId);
           io.to(roomCode).emit("room:state", state);
+          const delay = Math.max(0, (state.game?.roundEndsAt || Date.now()) - Date.now());
+          const timer = setTimeout(async () => {
+            try {
+              const listening = await RoomService.startListening(roomCode, requesterId);
+              io.to(roomCode).emit("listening:state", listening);
+              io.to(roomCode).emit("room:state", await RoomService.getPublicRoomState(roomCode));
+            } catch (error) {
+              if ((error as { code?: string }).code !== "INVALID_PHASE") log.error({ roomCode }, "failed to close choosing phase");
+            }
+          }, delay + 50);
+          timer.unref();
         });
       } catch (error) {
         socketError(socket, error);
@@ -169,6 +180,23 @@ export function initSocket(httpServer: HttpServer) {
         await runRoomAction(roomCode, async () => {
           await RoomService.submitChoice(roomCode, playerId, payload);
           socket.emit("submission:status", { submitted: true });
+          const roomState = await RoomService.getPublicRoomState(roomCode);
+          io.to(roomCode).emit("room:state", roomState);
+          if (
+            roomState.game &&
+            roomState.game.playersCount > 0 &&
+            roomState.game.submittedCount === roomState.game.playersCount
+          ) {
+            const listening = await RoomService.startListening(
+              roomCode,
+              roomState.host.playerId,
+            );
+            io.to(roomCode).emit("listening:state", listening);
+            io.to(roomCode).emit(
+              "room:state",
+              await RoomService.getPublicRoomState(roomCode),
+            );
+          }
         });
       } catch (error) { socketError(socket, error); }
     });
@@ -218,6 +246,13 @@ export function initSocket(httpServer: HttpServer) {
           await emitVotingViews(roomCode);
         });
       } catch (error) { socketError(socket, error); }
+    });
+    socket.on("round:next", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try { await runRoomAction(roomCode, async () => { io.to(roomCode).emit("room:state", await RoomService.prepareNextRound(roomCode, requesterId)); }); }
+      catch (error) { socketError(socket, error); }
     });
     socket.on("disconnect", async () => {
       log.info({ id: socket.id }, "socket disconnected");

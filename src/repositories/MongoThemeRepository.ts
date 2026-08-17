@@ -6,6 +6,8 @@ interface ThemeDocument {
   title: string;
   type: string;
   category?: string;
+  example?: string;
+  sourceReference?: { provider: string; resourceType: string; id: string };
 }
 
 const themeSchema = new mongoose.Schema<ThemeDocument>(
@@ -14,6 +16,8 @@ const themeSchema = new mongoose.Schema<ThemeDocument>(
     title: { type: String, required: true },
     type: { type: String, required: true },
     category: String,
+    example: String,
+    sourceReference: mongoose.Schema.Types.Mixed,
   },
   { collection: "gameThemes", strict: false },
 );
@@ -27,13 +31,15 @@ export default class MongoThemeRepository {
     const documents = await ThemeModel.aggregate<ThemeDocument>([
       { $match: { ...match, title: { $type: "string" }, type: { $type: "string" } } },
       { $sample: { size } },
-      { $project: { _id: 1, title: 1, type: 1, category: 1 } },
+      { $project: { _id: 1, title: 1, type: 1, category: 1, example: 1, sourceReference: 1 } },
     ]);
     return documents.map((theme) => ({
       id: String(theme._id),
       title: theme.title,
       type: theme.type,
       ...(theme.category ? { category: theme.category } : {}),
+      ...(theme.example ? { example: theme.example } : {}),
+      ...(theme.sourceReference ? { sourceReference: theme.sourceReference } : {}),
     }));
   }
 }

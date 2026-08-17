@@ -1,18 +1,33 @@
-export function parseYouTubeId(url: string): string | null {
+export interface ParsedYouTubeUrl { videoId: string; startTime: number; }
+
+export function parseYouTubeTimestamp(value: string | null): number {
+  if (!value) return 0;
+  if (/^\d+$/.test(value)) return Number(value);
+  const match = value.toLowerCase().match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+  if (!match) return 0;
+  return Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0);
+}
+
+export function parseYouTubeUrl(url: string): ParsedYouTubeUrl | null {
   if (!url) return null;
   try {
     const u = new URL(url);
+    let videoId: string | null = null;
     if (u.hostname.includes("youtu.be")) {
-      return u.pathname.slice(1);
+      videoId = u.pathname.split("/").filter(Boolean)[0] || null;
+    } else if (u.hostname.includes("youtube.com")) {
+      if (u.pathname.startsWith("/shorts/") || u.pathname.startsWith("/embed/")) videoId = u.pathname.split("/")[2] || null;
+      else videoId = u.searchParams.get("v");
     }
-    if (u.hostname.includes("youtube.com")) {
-      if (u.pathname.startsWith("/shorts/")) return u.pathname.split("/")[2];
-      return u.searchParams.get("v");
-    }
-    return null;
+    if (!videoId) return null;
+    return { videoId, startTime: parseYouTubeTimestamp(u.searchParams.get("t") || u.searchParams.get("start")) };
   } catch (e) {
     return null;
   }
+}
+
+export function parseYouTubeId(url: string): string | null {
+  return parseYouTubeUrl(url)?.videoId ?? null;
 }
 
 export async function getYouTubeVideoMetadata(
@@ -41,6 +56,6 @@ export async function getYouTubeVideoMetadata(
     throw new Error(`YouTube API failed (HTTP ${response.status}): ${detail}`);
   }
   return (await response.json()) as {
-    items?: Array<{ id?: string; snippet?: { title?: string } }>;
+    items?: Array<{ id?: string; snippet?: { title?: string; channelTitle?: string; thumbnails?: { medium?: { url?: string }; default?: { url?: string } } } }>;
   };
 }

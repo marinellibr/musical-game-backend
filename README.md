@@ -49,6 +49,7 @@ HTTP endpoints:
 - `POST /rooms/:roomCode/join` -> join
 - `GET /rooms/:roomCode` -> public room state
 - `GET /spotify/search?q=` -> spotify search (integration)
+- `GET /spotify/albums/:albumId/tracks` -> album-restricted track list
 - `GET /youtube/metadata?url=` -> youtube metadata
 - `GET /docs` -> Swagger UI
 - `GET /openapi.json` -> OpenAPI specification

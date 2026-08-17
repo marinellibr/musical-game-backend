@@ -22,6 +22,8 @@ export interface Theme {
 
 export const TOTAL_ROUNDS = 10;
 export const THEME_POOL_SIZE = 20;
+export const CHOOSING_DURATION_MS = 3 * 60 * 1000;
+export const CHOOSING_RECONNECT_GRACE_MS = 30 * 1000;
 
 export type ThemeReaction = "like" | "dislike";
 export type MediaSource = "SPOTIFY" | "YOUTUBE";
@@ -32,6 +34,8 @@ export interface GameTheme {
   title: string;
   type: string;
   category?: string;
+  example?: string;
+  sourceReference?: { provider: string; resourceType: string; id: string };
 }
 
 export interface InternalGameState {
@@ -49,6 +53,9 @@ export interface InternalGameState {
   listeningIndex: number;
   votingEnabled: boolean;
   votes: Record<string, GroupVote>;
+  roundStartedAt: number | null;
+  roundEndsAt: number | null;
+  roundParticipantIds: string[];
 }
 
 export interface PublicGameState {
@@ -60,6 +67,10 @@ export interface PublicGameState {
   dislikes: number;
   reactedPlayers: number;
   playersCount: number;
+  roundStartedAt: number | null;
+  roundEndsAt: number | null;
+  submittedCount: number;
+  waitingNextRoundCount: number;
 }
 
 export interface SubmissionInput {

@@ -149,6 +149,13 @@ export const openApiDocument = {
         },
       },
     },
+    "/spotify/albums/{albumId}/tracks": {
+      get: {
+        tags: ["Spotify"], summary: "Lista as faixas permitidas de um álbum",
+        parameters: [{ name: "albumId", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Faixas do álbum", content: { "application/json": { schema: { type: "object", properties: { albumId: { type: "string" }, items: { type: "array", items: { $ref: "#/components/schemas/SpotifyTrack" } } } } } } }, "503": { $ref: "#/components/responses/InternalError" } },
+      },
+    },
     "/youtube/metadata": {
       get: {
         tags: ["YouTube"],
@@ -249,6 +256,7 @@ export const openApiDocument = {
           isHost: { type: "boolean" },
           isPlaying: { type: "boolean" },
           connected: { type: "boolean" },
+          participationStatus: { type: "string", enum: ["ACTIVE", "WAITING_NEXT_ROUND"] },
         },
       },
       RoomState: {
@@ -288,6 +296,7 @@ export const openApiDocument = {
           title: { type: "string", example: "Melhor virada de bateria" },
           type: { type: "string", example: "MOMENT" },
           category: { type: "string", example: "INSTRUMENTS" },
+          example: { type: "string" },
         },
       },
       PublicGameState: {
@@ -302,6 +311,7 @@ export const openApiDocument = {
           dislikes: { type: "integer", minimum: 0 },
           reactedPlayers: { type: "integer", minimum: 0 },
           playersCount: { type: "integer", minimum: 0 },
+          roundStartedAt: { type: "integer", nullable: true }, roundEndsAt: { type: "integer", nullable: true }, submittedCount: { type: "integer", minimum: 0 }, waitingNextRoundCount: { type: "integer", minimum: 0 },
         },
       },
       RoomEntryResponse: {
@@ -332,9 +342,10 @@ export const openApiDocument = {
         required: ["query", "items"],
         properties: {
           query: { type: "string" },
-          items: { type: "array", items: { type: "object" } },
+          items: { type: "array", items: { $ref: "#/components/schemas/SpotifyTrack" } },
         },
       },
+      SpotifyTrack: { type: "object", required: ["trackId", "title"], properties: { trackId: { type: "string" }, trackUri: { type: "string" }, title: { type: "string" }, artist: { type: "string" }, album: { type: "string" }, albumId: { type: "string" }, image: { type: "string", format: "uri" } } },
       YouTubeMetadataResponse: {
         type: "object",
         required: ["videoId"],
@@ -342,6 +353,7 @@ export const openApiDocument = {
           videoId: { type: "string", example: "dQw4w9WgXcQ" },
           title: { type: "string", nullable: true },
           description: { type: "string", nullable: true },
+          startTime: { type: "integer", minimum: 0 }, channel: { type: "string" }, thumbnail: { type: "string", nullable: true },
         },
       },
     },
