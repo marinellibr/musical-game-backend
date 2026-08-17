@@ -17,6 +17,20 @@ export const openApiDocument = {
     "game:restart": {
       description: "Host cria uma nova sessão na mesma room após GAME_RESULTS.",
     },
+    "listening:next / listening:previous": {
+      description: "Host altera o índice authoritative da mídia em LISTENING. Na V2, avançar a última mídia encerra a audição sem iniciar VOTING.",
+    },
+    "listening:ready:set": {
+      description: "Player non-host ACTIVE da rodada V2 marca ou desfaz readiness após o encerramento da audição.",
+      payload: { type: "object", required: ["ready"], properties: { ready: { type: "boolean" } } },
+    },
+    "listening:state": {
+      description: "Estado authoritative de audição transmitido para toda a sala, incluindo mídia atual e readiness V2.",
+      payload: { $ref: "#/components/schemas/PublicListeningState" },
+    },
+    "voting:start": {
+      description: "Host inicia VOTING. Na V2 exige audição encerrada e ao menos um non-host elegível pronto, exceto quando não existe non-host elegível.",
+    },
   },
   servers: [
     { url: "http://localhost:3000", description: "Desenvolvimento local" },
@@ -340,8 +354,22 @@ export const openApiDocument = {
         required: ["id", "label", "description", "examples"],
         properties: {
           id: { type: "string" }, label: { type: "string" }, description: { type: "string" },
-          examples: { type: "array", maxItems: 3, items: { type: "object", required: ["id", "title"], properties: { id: { type: "string" }, title: { type: "string" } } } },
+          examples: { type: "array", maxItems: 1, items: { type: "object", required: ["id", "title"], properties: { id: { type: "string" }, title: { type: "string" } } } },
         },
+      },
+      PublicListeningState: {
+        type: "object",
+        required: ["theme", "index", "total", "current", "finished", "votingEnabled", "readyPlayers", "readyCount", "eligibleReadyCount", "canStartVoting"],
+        properties: {
+          theme: { $ref: "#/components/schemas/GameTheme" }, index: { type: "integer", minimum: 0 }, total: { type: "integer", minimum: 0 },
+          current: { nullable: true, $ref: "#/components/schemas/PublicMedia" }, finished: { type: "boolean" }, votingEnabled: { type: "boolean" },
+          readyPlayers: { type: "array", items: { type: "object", required: ["playerId", "username", "ready"], properties: { playerId: { type: "string" }, username: { type: "string" }, ready: { type: "boolean" } } } },
+          readyCount: { type: "integer", minimum: 0 }, eligibleReadyCount: { type: "integer", minimum: 0 }, canStartVoting: { type: "boolean" },
+        },
+      },
+      PublicMedia: {
+        type: "object", required: ["source", "title", "startTime", "externalUrl"],
+        properties: { source: { type: "string", enum: ["SPOTIFY", "YOUTUBE"] }, title: { type: "string" }, artist: { type: "string", description: "Artistas no Spotify ou canal no YouTube" }, spotifyTrackId: { type: "string" }, youtubeVideoId: { type: "string" }, startTime: { type: "integer", minimum: 0 }, thumbnail: { type: "string" }, externalUrl: { type: "string", format: "uri" } },
       },
       PublicGameState: {
         type: "object",

@@ -85,6 +85,8 @@ export interface InternalGameState {
   submissions: Record<string, Submission>;
   submissionGroups: SubmissionGroup[];
   listeningIndex: number;
+  listeningFinished: boolean;
+  listeningReadyPlayerIds: string[];
   votingEnabled: boolean;
   votes: Record<string, GroupVote>;
   roundStartedAt: number | null;
@@ -165,6 +167,10 @@ export interface PublicListeningState {
   current: PublicMedia | null;
   finished: boolean;
   votingEnabled: boolean;
+  readyPlayers: Array<{ playerId: string; username: string; ready: boolean }>;
+  readyCount: number;
+  eligibleReadyCount: number;
+  canStartVoting: boolean;
 }
 
 export interface VotingGroup {

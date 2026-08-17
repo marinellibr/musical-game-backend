@@ -375,6 +375,64 @@ describe("room player lifecycle", () => {
     expect(restored).toEqual(before);
   });
 
+  it("keeps V2 listening authoritative and gates voting with non-host readiness", async () => {
+    const host = await RoomService.createRoom("Host", true, "v2");
+    const carol = await RoomService.joinRoom(host.roomCode, "Carol");
+    const bruno = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    await RoomService.submitChoice(host.roomCode, host.player.playerId, { source: "SPOTIFY", title: "Host song", artist: "Host artist", spotifyTrackId: "host-track" });
+    await RoomService.submitChoice(host.roomCode, carol.player.playerId, { source: "SPOTIFY", title: "Carol song", artist: "Carol artist", spotifyTrackId: "carol-track" });
+    await RoomService.submitChoice(host.roomCode, bruno.player.playerId, { source: "SPOTIFY", title: "Bruno song", artist: "Bruno artist", spotifyTrackId: "bruno-track" });
+
+    const initial = await RoomService.startListening(host.roomCode, host.player.playerId);
+    expect(initial).toMatchObject({ index: 0, total: 3, finished: false, readyCount: 0, eligibleReadyCount: 2, canStartVoting: false });
+    expect(initial.current).toMatchObject({ title: expect.any(String), artist: expect.any(String) });
+    await expect(RoomService.moveListening(host.roomCode, carol.player.playerId, "next")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(RoomService.setListeningReady(host.roomCode, carol.player.playerId, true)).rejects.toMatchObject({ code: "LISTENING_NOT_FINISHED" });
+
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "previous");
+    expect((await RoomService.getListeningState(host.roomCode))?.index).toBe(0);
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    const finished = await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    expect(finished).toMatchObject({ index: 2, finished: true, current: { title: expect.any(String) }, canStartVoting: false });
+    await expect(RoomService.startVoting(host.roomCode, host.player.playerId)).rejects.toMatchObject({ code: "LISTENING_READY_REQUIRED" });
+    await expect(RoomService.setListeningReady(host.roomCode, host.player.playerId, true)).rejects.toMatchObject({ code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
+
+    const ready = await RoomService.setListeningReady(host.roomCode, carol.player.playerId, true);
+    expect(ready).toMatchObject({ readyCount: 1, eligibleReadyCount: 2, canStartVoting: true });
+    expect(ready.readyPlayers).toEqual(expect.arrayContaining([{ playerId: carol.player.playerId, username: "Carol", ready: true }]));
+    expect((JSON.parse(redisStore.get(`room:${host.roomCode}`)!).game.listeningReadyPlayerIds)).toContain(carol.player.playerId);
+    expect(await RoomService.getListeningState(host.roomCode)).toEqual(ready);
+
+    const unready = await RoomService.setListeningReady(host.roomCode, carol.player.playerId, false);
+    expect(unready).toMatchObject({ readyCount: 0, canStartVoting: false });
+    await RoomService.setListeningReady(host.roomCode, bruno.player.playerId, true);
+    expect((await RoomService.startVoting(host.roomCode, host.player.playerId)) - Date.now()).toBe(60_000);
+  });
+
+  it("allows V2 host to start voting when there are zero eligible non-host players", async () => {
+    const host = await RoomService.createRoom("Host", true, "v2");
+    const carol = await RoomService.joinRoom(host.roomCode, "Carol");
+    const bruno = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    await RoomService.submitChoice(host.roomCode, host.player.playerId, { source: "SPOTIFY", title: "Only song", spotifyTrackId: "only-track" });
+    const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    persisted.game.roundParticipantIds = [host.player.playerId];
+    persisted.players[carol.player.playerId].participationStatus = "WAITING_NEXT_ROUND";
+    persisted.players[bruno.player.playerId].participationStatus = "WAITING_NEXT_ROUND";
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(persisted));
+    await RoomService.startListening(host.roomCode, host.player.playerId);
+    const finished = await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    expect(finished).toMatchObject({ finished: true, eligibleReadyCount: 0, canStartVoting: true });
+    await expect(RoomService.setListeningReady(host.roomCode, carol.player.playerId, true)).rejects.toMatchObject({ code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
+    await expect(RoomService.startVoting(host.roomCode, carol.player.playerId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(RoomService.startVoting(host.roomCode, host.player.playerId)).resolves.toBe(Date.now() + 60_000);
+  });
+
   it("keeps an active player reconnectable beyond 90 seconds during choosing", async () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Player");

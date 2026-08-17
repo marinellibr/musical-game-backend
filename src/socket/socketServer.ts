@@ -255,6 +255,16 @@ export function initSocket(httpServer: HttpServer) {
         } catch (error) { socketError(socket, error); }
       });
     }
+    socket.on("listening:ready:set", async (payload: { ready?: boolean }) => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId || typeof payload?.ready !== "boolean") return socketError(socket, Object.assign(new Error("Invalid ready payload"), { code: "INVALID_PAYLOAD" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          io.to(roomCode).emit("listening:state", await RoomService.setListeningReady(roomCode, requesterId, payload.ready!));
+        });
+      } catch (error) { socketError(socket, error); }
+    });
     socket.on("voting:start", async () => {
       const roomCode = socket.data.roomCode as string | undefined;
       const requesterId = socket.data.playerId as string | undefined;

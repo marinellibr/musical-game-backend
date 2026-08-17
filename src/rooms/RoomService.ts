@@ -201,6 +201,7 @@ export default class RoomService {
       });
     }
     delete room.players[targetPlayerId];
+    if (room.game) room.game.listeningReadyPlayerIds = (room.game.listeningReadyPlayerIds || []).filter((id) => id !== targetPlayerId);
     await Promise.all([
       repo.saveRoom(normalizedCode, room),
       repo.markSessionInvalid(normalizedCode, targetPlayerId, "removed"),
@@ -343,6 +344,8 @@ export default class RoomService {
       submissions: {},
       submissionGroups: [],
       listeningIndex: 0,
+      listeningFinished: false,
+      listeningReadyPlayerIds: [],
       votingEnabled: true,
       votes: {},
       roundStartedAt: null,
@@ -492,6 +495,8 @@ export default class RoomService {
     }
     room.game.submissionGroups = this.shuffleGroups(this.groupSubmissions(Object.values(room.game.submissions)));
     room.game.listeningIndex = 0;
+    room.game.listeningFinished = false;
+    room.game.listeningReadyPlayerIds = [];
     room.game.phase = "LISTENING";
     room.status = "LISTENING";
     await repo.saveRoom(room.roomCode, room);
@@ -501,11 +506,38 @@ export default class RoomService {
   static async moveListening(roomCode: string, requesterId: string, direction: "next" | "previous") {
     const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
     if (!room.game) throw new Error("Game state missing");
-    const maxIndex = room.game.submissionGroups.length;
-    room.game.listeningIndex = direction === "next"
-      ? Math.min(room.game.listeningIndex + 1, maxIndex)
-      : Math.max(room.game.listeningIndex - 1, 0);
+    if (room.gameVersion === "v2") {
+      const lastIndex = Math.max(0, room.game.submissionGroups.length - 1);
+      if (direction === "next" && room.game.listeningIndex >= lastIndex) room.game.listeningFinished = true;
+      else {
+        room.game.listeningFinished = false;
+        room.game.listeningIndex = direction === "next"
+          ? Math.min(room.game.listeningIndex + 1, lastIndex)
+          : Math.max(room.game.listeningIndex - 1, 0);
+      }
+    } else {
+      const maxIndex = room.game.submissionGroups.length;
+      room.game.listeningIndex = direction === "next"
+        ? Math.min(room.game.listeningIndex + 1, maxIndex)
+        : Math.max(room.game.listeningIndex - 1, 0);
+    }
     await repo.saveRoom(room.roomCode, room);
+    return this.toListeningState(room);
+  }
+
+  static async setListeningReady(roomCode: string, requesterId: string, ready: boolean): Promise<PublicListeningState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room?.game || room.status !== "LISTENING") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
+    if (room.gameVersion !== "v2") throw Object.assign(new Error("Ready is only available in V2"), { code: "INVALID_GAME_VERSION" });
+    if (!room.game.listeningFinished) throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
+    const player = room.players[requesterId];
+    const eligible = player && !player.isHost && player.isPlaying && player.participationStatus === "ACTIVE" && room.game.roundParticipantIds.includes(requesterId);
+    if (!eligible) throw Object.assign(new Error("Player is not eligible for ready"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
+    const readyIds = new Set(room.game.listeningReadyPlayerIds || []);
+    if (ready) readyIds.add(requesterId); else readyIds.delete(requesterId);
+    room.game.listeningReadyPlayerIds = [...readyIds];
+    await repo.saveRoom(normalizedCode, room);
     return this.toListeningState(room);
   }
 
@@ -523,7 +555,12 @@ export default class RoomService {
   static async startVoting(roomCode: string, requesterId: string): Promise<number> {
     const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
     if (!room.game) throw new Error("Game state missing");
-    if (room.game.listeningIndex < room.game.submissionGroups.length) {
+    if (room.gameVersion === "v2") {
+      if (!room.game.listeningFinished) throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
+      const eligibleIds = this.eligibleListeningReadyPlayers(room).map((player) => player.playerId);
+      const readyCount = (room.game.listeningReadyPlayerIds || []).filter((id) => eligibleIds.includes(id)).length;
+      if (eligibleIds.length > 0 && readyCount < 1) throw Object.assign(new Error("Waiting for a ready player"), { code: "LISTENING_READY_REQUIRED" });
+    } else if (room.game.listeningIndex < room.game.submissionGroups.length) {
       throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
     }
     room.game.phase = "VOTING";
@@ -691,7 +728,19 @@ export default class RoomService {
   private static toListeningState(room: Room): PublicListeningState {
     if (!room.game) throw new Error("Game state missing");
     const group = room.game.submissionGroups[room.game.listeningIndex];
-    return { theme: room.game.currentTheme, index: room.game.listeningIndex, total: room.game.submissionGroups.length, current: group?.publicMedia ?? null, finished: room.game.listeningIndex >= room.game.submissionGroups.length, votingEnabled: room.game.votingEnabled };
+    const readyPlayers = room.gameVersion === "v2" ? this.eligibleListeningReadyPlayers(room).map((player) => ({
+      playerId: player.playerId,
+      username: player.username,
+      ready: (room.game!.listeningReadyPlayerIds || []).includes(player.playerId),
+    })) : [];
+    const finished = room.gameVersion === "v2" ? Boolean(room.game.listeningFinished) : room.game.listeningIndex >= room.game.submissionGroups.length;
+    const readyCount = readyPlayers.filter((player) => player.ready).length;
+    return { theme: room.game.currentTheme, index: room.game.listeningIndex, total: room.game.submissionGroups.length, current: group?.publicMedia ?? null, finished, votingEnabled: room.game.votingEnabled, readyPlayers, readyCount, eligibleReadyCount: readyPlayers.length, canStartVoting: finished && (readyCount >= 1 || readyPlayers.length === 0) };
+  }
+
+  private static eligibleListeningReadyPlayers(room: Room) {
+    if (!room.game) return [];
+    return room.game.roundParticipantIds.map((id) => room.players[id]).filter((player): player is Player => Boolean(player && !player.isHost && player.isPlaying && player.participationStatus === "ACTIVE"));
   }
 
   private static async requireHostPhase(roomCode: string, requesterId: string, status: string): Promise<Room> {
@@ -726,7 +775,7 @@ export default class RoomService {
     const nextTheme = room.game.themePool[room.game.themePoolIndex + 1];
     if (!nextTheme) throw Object.assign(new Error("Theme pool exhausted"), { code: "THEME_POOL_EXHAUSTED" });
     Object.values(room.players).forEach((player) => { if (player.participationStatus === "WAITING_NEXT_ROUND") player.participationStatus = "ACTIVE"; });
-    room.game.round += 1; room.game.themePoolIndex += 1; room.game.currentTheme = nextTheme; room.game.phase = "THEME_SELECTION"; room.game.reactions = {}; room.game.submissions = {}; room.game.submissionGroups = []; room.game.votes = {}; room.game.roundStartedAt = null; room.game.roundEndsAt = null; room.game.roundParticipantIds = []; room.game.votingStartedAt = null; room.game.votingEndsAt = null; room.game.roundResult = null; room.game.resultRevealStage = "AUTHORS";
+    room.game.round += 1; room.game.themePoolIndex += 1; room.game.currentTheme = nextTheme; room.game.phase = "THEME_SELECTION"; room.game.reactions = {}; room.game.submissions = {}; room.game.submissionGroups = []; room.game.listeningIndex = 0; room.game.listeningFinished = false; room.game.listeningReadyPlayerIds = []; room.game.votes = {}; room.game.roundStartedAt = null; room.game.roundEndsAt = null; room.game.roundParticipantIds = []; room.game.votingStartedAt = null; room.game.votingEndsAt = null; room.game.roundResult = null; room.game.resultRevealStage = "AUTHORS";
     room.status = "THEME_REVEAL";
     await repo.saveRoom(normalizedCode, room);
     return this.toPublicState(room);
@@ -745,6 +794,10 @@ export default class RoomService {
     room.gameVersion ||= "v1";
     room.settings = normalizeGameSettings(room.settings);
     let settingsChanged = false;
+    if (room.game) {
+      if (typeof room.game.listeningFinished !== "boolean") { room.game.listeningFinished = false; settingsChanged = true; }
+      if (!Array.isArray(room.game.listeningReadyPlayerIds)) { room.game.listeningReadyPlayerIds = []; settingsChanged = true; }
+    }
     if (room.gameVersion === "v2") {
       const validIds = new Set((await themeRepo.listCategories()).map((category) => category.id));
       const selectedCategories = (room.settings.selectedCategories || []).filter((category) => validIds.has(category));
@@ -766,6 +819,10 @@ export default class RoomService {
       return room;
     }
     for (const player of expired) delete room.players[player.playerId];
+    if (room.game && expired.length) {
+      const expiredIds = new Set(expired.map((player) => player.playerId));
+      room.game.listeningReadyPlayerIds = room.game.listeningReadyPlayerIds.filter((id) => !expiredIds.has(id));
+    }
     await Promise.all([
       repo.saveRoom(roomCode, room),
       ...expired.map((player) =>
