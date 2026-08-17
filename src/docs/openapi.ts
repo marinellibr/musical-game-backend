@@ -312,6 +312,7 @@ export const openApiDocument = {
           reactedPlayers: { type: "integer", minimum: 0 },
           playersCount: { type: "integer", minimum: 0 },
           roundStartedAt: { type: "integer", nullable: true }, roundEndsAt: { type: "integer", nullable: true }, submittedCount: { type: "integer", minimum: 0 }, waitingNextRoundCount: { type: "integer", minimum: 0 },
+          leaderboard: { type: "array", items: { $ref: "#/components/schemas/LeaderboardEntry" } },
         },
       },
       RoomEntryResponse: {
@@ -346,6 +347,7 @@ export const openApiDocument = {
         },
       },
       SpotifyTrack: { type: "object", required: ["trackId", "title"], properties: { trackId: { type: "string" }, trackUri: { type: "string" }, title: { type: "string" }, artist: { type: "string" }, album: { type: "string" }, albumId: { type: "string" }, image: { type: "string", format: "uri" } } },
+      LeaderboardEntry: { type: "object", required: ["playerId", "username", "score", "position"], properties: { playerId: { type: "string" }, username: { type: "string" }, score: { type: "number" }, position: { type: "integer", minimum: 1 } } },
       YouTubeMetadataResponse: {
         type: "object",
         required: ["videoId"],

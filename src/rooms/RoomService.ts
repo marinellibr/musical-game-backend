@@ -247,6 +247,8 @@ export default class RoomService {
       roundStartedAt: null,
       roundEndsAt: null,
       roundParticipantIds: [],
+      consolidatedScores: {},
+      lastScoredRound: 0,
     };
     room.status = "THEME_REVEAL";
     await repo.saveRoom(normalizedCode, room);
@@ -537,6 +539,34 @@ export default class RoomService {
     return this.toPublicState(room);
   }
 
+  static async consolidateRoundScores(
+    roomCode: string,
+    roundScores: Readonly<Record<string, number>>,
+  ): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (!room.game || room.status !== "ROUND_RESULTS") {
+      throw Object.assign(new Error("Scores can only be consolidated after round results"), { code: "INVALID_PHASE" });
+    }
+    room.game.consolidatedScores ||= {};
+    room.game.lastScoredRound ||= 0;
+    if (room.game.lastScoredRound >= room.game.round) return this.toPublicState(room);
+    for (const playerId of room.game.roundParticipantIds) {
+      const player = room.players[playerId];
+      if (!player?.isPlaying) continue;
+      const points = roundScores[playerId] ?? 0;
+      if (!Number.isFinite(points) || points < 0) {
+        throw Object.assign(new Error("Invalid round score"), { code: "INVALID_SCORE" });
+      }
+      room.game.consolidatedScores[playerId] =
+        (room.game.consolidatedScores[playerId] || 0) + points;
+    }
+    room.game.lastScoredRound = room.game.round;
+    await repo.saveRoom(normalizedCode, room);
+    return this.toPublicState(room);
+  }
+
   static async cleanupExpiredPlayers(roomCode: string): Promise<RoomPublicState> {
     const normalizedCode = this.normalizeRoomCode(roomCode);
     const room = await this.getRoomWithCleanup(normalizedCode);
@@ -594,6 +624,7 @@ export default class RoomService {
             roundEndsAt: room.game.roundEndsAt,
             submittedCount: room.game.roundParticipantIds.filter((id) => Boolean(room.game?.submissions[id])).length,
             waitingNextRoundCount: Object.values(room.players).filter((player) => player.participationStatus === "WAITING_NEXT_ROUND").length,
+            leaderboard: this.toLeaderboard(room),
           }
         : null,
     };
@@ -604,5 +635,20 @@ export default class RoomService {
       return now > room.game.roundEndsAt + CHOOSING_RECONNECT_GRACE_MS;
     }
     return now - disconnectedAt > PLAYER_RECONNECT_TTL_MS;
+  }
+
+  private static toLeaderboard(room: Room) {
+    if (!room.game) return [];
+    const entries = Object.entries(room.game.consolidatedScores || {})
+      .map(([playerId, score]) => ({ playerId, score, player: room.players[playerId] }))
+      .filter((entry) => entry.player?.isPlaying)
+      .sort((a, b) => b.score - a.score || a.player.username.localeCompare(b.player.username, "pt-BR"));
+    let previousScore: number | null = null;
+    let position = 0;
+    return entries.map((entry, index) => {
+      if (entry.score !== previousScore) position = index + 1;
+      previousScore = entry.score;
+      return { playerId: entry.playerId, username: entry.player.username, score: entry.score, position };
+    });
   }
 }

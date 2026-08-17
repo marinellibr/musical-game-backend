@@ -292,4 +292,29 @@ describe("room player lifecycle", () => {
     await expect(RoomService.submitChoice(host.roomCode, player.player.playerId, { source: "SPOTIFY", title: "Allowed", spotifyTrackId: "allowed-track" })).resolves.toMatchObject({ spotifyTrackId: "allowed-track" });
     await expect(RoomService.submitChoice(host.roomCode, player.player.playerId, { source: "SPOTIFY", title: "Blocked", spotifyTrackId: "other-track" })).rejects.toMatchObject({ code: "TRACK_NOT_IN_ALBUM" });
   });
+
+  it("publishes only consolidated prior-round scores and excludes a host-only", async () => {
+    const host = await RoomService.createRoom("TV", false);
+    const luiz = await RoomService.joinRoom(host.roomCode, "Luiz");
+    const carol = await RoomService.joinRoom(host.roomCode, "Carol");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    persisted.status = "ROUND_RESULTS";
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(persisted));
+
+    const scored = await RoomService.consolidateRoundScores(host.roomCode, {
+      [host.player.playerId]: 100,
+      [luiz.player.playerId]: 10,
+      [carol.player.playerId]: 10,
+    });
+    expect(scored.game?.leaderboard).toEqual([
+      { playerId: carol.player.playerId, username: "Carol", score: 10, position: 1 },
+      { playerId: luiz.player.playerId, username: "Luiz", score: 10, position: 1 },
+    ]);
+    const repeated = await RoomService.consolidateRoundScores(host.roomCode, {
+      [luiz.player.playerId]: 10,
+    });
+    expect(repeated.game?.leaderboard.find((entry) => entry.playerId === luiz.player.playerId)?.score).toBe(10);
+  });
 });

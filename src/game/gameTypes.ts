@@ -56,6 +56,8 @@ export interface InternalGameState {
   roundStartedAt: number | null;
   roundEndsAt: number | null;
   roundParticipantIds: string[];
+  consolidatedScores: Record<string, number>;
+  lastScoredRound: number;
 }
 
 export interface PublicGameState {
@@ -71,6 +73,14 @@ export interface PublicGameState {
   roundEndsAt: number | null;
   submittedCount: number;
   waitingNextRoundCount: number;
+  leaderboard: LeaderboardEntry[];
+}
+
+export interface LeaderboardEntry {
+  playerId: string;
+  username: string;
+  score: number;
+  position: number;
 }
 
 export interface SubmissionInput {
