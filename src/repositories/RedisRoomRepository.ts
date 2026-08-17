@@ -2,7 +2,7 @@ import { getRedis } from "../config/redis";
 import { env } from "../config/env";
 import { Player, Room } from "../rooms/roomTypes";
 import { generateRoomCode } from "../utils/roomCode";
-import { DEFAULT_GAME_SETTINGS, GameVersion } from "../game/gameTypes";
+import { DEFAULT_GAME_SETTINGS } from "../game/gameTypes";
 
 const PREFIX = "room:";
 const SESSION_PREFIX = "room-session:";
@@ -12,7 +12,7 @@ export type InvalidSessionReason = "expired" | "removed";
 export default class RedisRoomRepository {
   private readonly redis = getRedis();
 
-  async createRoom(hostPlayer: Player, gameVersion: GameVersion = "v1"): Promise<Room> {
+  async createRoom(hostPlayer: Player): Promise<Room> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = generateRoomCode(4).toUpperCase();
       const key = PREFIX + code;
@@ -23,7 +23,6 @@ export default class RedisRoomRepository {
           host: hostPlayer.playerId,
           status: "LOBBY",
           sessionId: null,
-          gameVersion,
           settings: { ...DEFAULT_GAME_SETTINGS },
           createdAt: Date.now(),
           game: null,

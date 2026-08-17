@@ -14,10 +14,12 @@ describe("normalizeGameSettings", () => {
     expect(normalizeGameSettings({ totalRounds: 5 })).toEqual({
       totalRounds: 5,
       choosingDurationSeconds: 180,
+      selectedCategories: [],
     });
     expect(normalizeGameSettings({ choosingDurationSeconds: 540 })).toEqual({
       totalRounds: 10,
       choosingDurationSeconds: 540,
+      selectedCategories: [],
     });
     expect(normalizeGameSettings({ totalRounds: 4 as 3 })).toEqual(
       DEFAULT_GAME_SETTINGS,

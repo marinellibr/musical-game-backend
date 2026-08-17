@@ -315,7 +315,7 @@ export function initSocket(httpServer: HttpServer) {
       try { await runRoomAction(roomCode, async () => {
         const state = await RoomService.prepareNextRound(roomCode, requesterId);
         io.to(roomCode).emit("room:state", state);
-        if (state.status === "GAME_RESULTS" && state.gameVersion === "v2") {
+        if (state.status === "GAME_RESULTS") {
           const result = await RoomService.getRuntimeFinishedResult(roomCode);
           if (result) io.to(roomCode).emit("game:finished", result);
         }

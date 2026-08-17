@@ -14,7 +14,7 @@ const RoomController = {
     if (!parsed.success) return invalidPayload(res);
     try {
       return res.json(
-        await RoomService.createRoom(parsed.data.username, parsed.data.isPlaying, parsed.data.gameVersion),
+        await RoomService.createRoom(parsed.data.username, parsed.data.isPlaying),
       );
     } catch (error) {
       return next(error);
@@ -53,7 +53,7 @@ const RoomController = {
   async getSessionResult(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await RoomService.getFinishedResult(req.params.sessionId);
-      if (!result) return res.status(404).json({ error: { code: "RESULT_NOT_FOUND", message: "Finished V2 session not found" } });
+      if (!result) return res.status(404).json({ error: { code: "RESULT_NOT_FOUND", message: "Finished session not found" } });
       return res.json(result);
     } catch (error) {
       return next(error);

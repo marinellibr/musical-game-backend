@@ -16,7 +16,7 @@ for (const playerCount of [10, 20]) {
   const analysis = FinalAnalysisService.calculate(rounds, new Date("2026-08-17T12:00:00Z"));
   const elapsedMs = performance.now() - startedAt;
   const leaderboard: LeaderboardEntry[] = analysis.players.map((player, index) => ({ playerId: player.playerId, username: player.username, totalLikes: player.totalLikesReceived, totalDislikes: player.totalDislikesReceived, voteBalance: player.totalLikesReceived - player.totalDislikesReceived, position: index + 1 }));
-  const session = { sessionId: "benchmark", gameVersion: "v2", players: analysis.players.map(({ playerId, username }) => ({ playerId, username })), rounds, finalRanking: leaderboard, analysis };
+  const session = { sessionId: "benchmark", players: analysis.players.map(({ playerId, username }) => ({ playerId, username })), rounds, finalRanking: leaderboard, analysis };
   const refs = (players: typeof analysis.highlights.mostLiked) => players.map(({ playerId, username }) => ({ playerId, username }));
   const dto = { sessionId: "benchmark", leaderboard, analysis: { analysisVersion: analysis.analysisVersion, generatedAt: analysis.generatedAt, highlights: { ...analysis.highlights, mostLiked: refs(analysis.highlights.mostLiked), mostDisliked: refs(analysis.highlights.mostDisliked), mostControversial: refs(analysis.highlights.mostControversial) } } };
   process.stdout.write(JSON.stringify({ playerCount, rounds: 10, elapsedMs: Number(elapsedMs.toFixed(3)), sessionKb: Number((Buffer.byteLength(JSON.stringify(session)) / 1024).toFixed(1)), socketDtoKb: Number((Buffer.byteLength(JSON.stringify(dto)) / 1024).toFixed(1)) }) + "\n");

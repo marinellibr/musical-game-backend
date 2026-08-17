@@ -6,7 +6,6 @@ describe("room HTTP payloads", () => {
     expect(createRoomSchema.parse({ username: " Luiz " })).toEqual({
       username: "Luiz",
       isPlaying: true,
-      gameVersion: "v1",
     });
   });
 

@@ -1,13 +1,12 @@
 import mongoose from "mongoose";
 import { UpdateQuery } from "mongoose";
-import { FinalAnalysis, GameSettings, GameVersion, HistoricalRound, LeaderboardEntry } from "../game/gameTypes";
+import { FinalAnalysis, GameSettings, HistoricalRound, LeaderboardEntry } from "../game/gameTypes";
 
 export interface GameSessionRecord {
   sessionId: string;
   roomCode: string;
   createdAt: Date;
   status: "LOBBY" | "ACTIVE" | "FINISHED";
-  gameVersion: GameVersion;
   settings: GameSettings;
   finishedAt?: Date;
   players: unknown[];
@@ -23,7 +22,8 @@ const Schema = new mongoose.Schema(
     roomCode: String,
     createdAt: Date,
     status: { type: String, required: true, enum: ["LOBBY", "ACTIVE", "FINISHED"] },
-    gameVersion: { type: String, required: true, enum: ["v1", "v2"], default: "v1" },
+    // Read compatibility only: historical documents may still contain this field.
+    gameVersion: { type: String, required: false, select: false },
     settings: { totalRounds: Number, choosingDurationSeconds: Number, selectedCategories: [String] },
     finishedAt: Date,
     players: Array,
@@ -52,7 +52,7 @@ export default class MongoSessionRepository {
     return Model.findOne({ sessionId }).lean();
   }
 
-  async finalizeV2(sessionId: string, snapshot: { finishedAt: Date; players: unknown[]; rounds: HistoricalRound[]; finalRanking: LeaderboardEntry[]; analysis: FinalAnalysis }) {
+  async finalize(sessionId: string, snapshot: { finishedAt: Date; players: unknown[]; rounds: HistoricalRound[]; finalRanking: LeaderboardEntry[]; analysis: FinalAnalysis }) {
     const finalized = await Model.findOneAndUpdate(
       { sessionId, status: { $ne: "FINISHED" } },
       { $set: { status: "FINISHED", ...snapshot } },
@@ -63,7 +63,7 @@ export default class MongoSessionRepository {
 
   async findResult(sessionId: string) {
     return Model.findOne({ sessionId, status: "FINISHED" })
-      .select({ _id: 0, sessionId: 1, gameVersion: 1, finalRanking: 1, analysis: 1 })
+      .select({ _id: 0, sessionId: 1, finalRanking: 1, analysis: 1 })
       .lean();
   }
 }

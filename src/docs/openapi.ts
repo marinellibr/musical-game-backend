@@ -8,7 +8,7 @@ export const openApiDocument = {
   },
   "x-socket-events": {
     "game:start": {
-      description: "Host inicia a partida quando existem pelo menos 3 jogadores; sessões V2 também exigem ao menos 2 categorias válidas.",
+      description: "Host inicia a partida quando existem pelo menos 3 jogadores e ao menos 2 categorias válidas.",
     },
     "game:settings:update": {
       description: "Host atualiza os presets da partida enquanto a sala está no lobby.",
@@ -18,21 +18,21 @@ export const openApiDocument = {
       description: "Host cria uma nova sessão na mesma room após GAME_RESULTS.",
     },
     "listening:next / listening:previous": {
-      description: "Eventos de navegação authoritative exclusivos da V1. Na V2 cada player navega localmente pela playlist recebida.",
+      description: "Eventos legados rejeitados: cada player navega localmente pela playlist recebida.",
     },
     "listening:ready:set": {
-      description: "Player non-host ACTIVE da rodada V2 marca ou desfaz readiness a qualquer momento durante LISTENING.",
+      description: "Player non-host ACTIVE marca ou desfaz readiness a qualquer momento durante LISTENING.",
       payload: { type: "object", required: ["ready"], properties: { ready: { type: "boolean" } } },
     },
     "listening:state": {
-      description: "Estado authoritative de audição transmitido para toda a sala, incluindo mídia atual e readiness V2.",
+      description: "Estado authoritative de audição transmitido para toda a sala, incluindo playlist e readiness.",
       payload: { $ref: "#/components/schemas/PublicListeningState" },
     },
     "voting:start": {
-      description: "Host inicia VOTING. Na V2 exige ao menos um non-host elegível pronto, exceto quando não existe non-host elegível.",
+      description: "Host inicia VOTING; exige ao menos um non-host elegível pronto, exceto quando não existe non-host elegível.",
     },
     "game:finished": {
-      description: "Emitido somente após a consolidação Mongo da sessão V2; contém apenas leaderboard e análise final.",
+      description: "Emitido somente após a consolidação Mongo da sessão; contém leaderboard e análise final.",
       payload: { $ref: "#/components/schemas/GameFinishedView" },
     },
   },
@@ -149,11 +149,11 @@ export const openApiDocument = {
     "/rooms/sessions/{sessionId}/result": {
       get: {
         tags: ["Rooms"],
-        summary: "Recupera o resultado consolidado de uma sessão V2 concluída",
+        summary: "Recupera o resultado consolidado de uma sessão concluída",
         parameters: [{ name: "sessionId", in: "path", required: true, schema: { type: "string" } }],
         responses: {
           "200": { description: "Leaderboard e análise final", content: { "application/json": { schema: { $ref: "#/components/schemas/GameFinishedView" } } } },
-          "404": { description: "Resultado V2 não encontrado", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "404": { description: "Resultado não encontrado", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
         },
       },
     },
@@ -291,7 +291,6 @@ export const openApiDocument = {
         properties: {
           username: { type: "string", minLength: 1, maxLength: 32, example: "Ana" },
           isPlaying: { type: "boolean", default: true },
-          gameVersion: { type: "string", enum: ["v1", "v2"], default: "v1" },
         },
       },
       JoinRoomRequest: {
@@ -315,7 +314,7 @@ export const openApiDocument = {
       },
       RoomState: {
         type: "object",
-        required: ["roomCode", "status", "gameVersion", "host", "players", "settings"],
+        required: ["roomCode", "status", "host", "players", "settings"],
         properties: {
           roomCode: { type: "string", example: "R78X" },
           sessionId: { type: "string", nullable: true },
@@ -332,7 +331,6 @@ export const openApiDocument = {
               "GAME_SUMMARY",
             ],
           },
-          gameVersion: { type: "string", enum: ["v1", "v2"] },
           host: { $ref: "#/components/schemas/PublicPlayer" },
           players: {
             type: "array",
@@ -358,11 +356,11 @@ export const openApiDocument = {
       },
       GameSettings: {
         type: "object",
-        required: ["totalRounds", "choosingDurationSeconds"],
+        required: ["totalRounds", "choosingDurationSeconds", "selectedCategories"],
         properties: {
           totalRounds: { type: "integer", enum: [3, 5, 10], default: 10 },
           choosingDurationSeconds: { type: "integer", enum: [180, 360, 540], default: 180 },
-          selectedCategories: { type: "array", minItems: 2, uniqueItems: true, items: { type: "string" }, description: "Obrigatório para sessões V2" },
+          selectedCategories: { type: "array", minItems: 2, uniqueItems: true, items: { type: "string" } },
         },
       },
       GameCategory: {
@@ -379,7 +377,7 @@ export const openApiDocument = {
         properties: {
           theme: { $ref: "#/components/schemas/GameTheme" }, index: { type: "integer", minimum: 0 }, total: { type: "integer", minimum: 0 },
           current: { nullable: true, $ref: "#/components/schemas/PublicMedia" }, finished: { type: "boolean" }, votingEnabled: { type: "boolean" },
-          items: { type: "array", description: "Playlist completa enviada aos clientes V2 para navegação local independente.", items: { $ref: "#/components/schemas/PublicMedia" } },
+          items: { type: "array", description: "Playlist completa enviada aos clientes para navegação local independente.", items: { $ref: "#/components/schemas/PublicMedia" } },
           readyPlayers: { type: "array", items: { type: "object", required: ["playerId", "username", "ready"], properties: { playerId: { type: "string" }, username: { type: "string" }, ready: { type: "boolean" } } } },
           readyCount: { type: "integer", minimum: 0 }, eligibleReadyCount: { type: "integer", minimum: 0 }, canStartVoting: { type: "boolean" },
         },
@@ -406,12 +404,11 @@ export const openApiDocument = {
       },
       RoomEntryResponse: {
         type: "object",
-        required: ["roomCode", "player", "playerToken", "gameVersion"],
+        required: ["roomCode", "player", "playerToken"],
         properties: {
           roomCode: { type: "string", example: "R78X" },
           player: { $ref: "#/components/schemas/PublicPlayer" },
           playerToken: { type: "string", example: "token_123" },
-          gameVersion: { type: "string", enum: ["v1", "v2"] },
         },
       },
       ErrorResponse: {

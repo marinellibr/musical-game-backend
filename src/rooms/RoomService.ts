@@ -10,7 +10,6 @@ import {
   THEME_POOL_SIZE,
   ThemeReaction,
   GameSettings,
-  GameVersion,
   TotalRounds,
   ChoosingDurationSeconds,
   normalizeGameSettings,
@@ -60,7 +59,7 @@ export default class RoomService {
     return roomCode.replace(/\s+/g, "").toUpperCase();
   }
 
-  static async createRoom(username: string, isPlaying = true, gameVersion: GameVersion = "v1") {
+  static async createRoom(username: string, isPlaying = true) {
     const playerId = generateId("player");
     const playerToken = generateId("token");
     const hostPlayer: Player = {
@@ -74,14 +73,12 @@ export default class RoomService {
       lastSeenAt: Date.now(),
       participationStatus: "ACTIVE",
     };
-    const room = await repo.createRoom(hostPlayer, gameVersion);
-    if (gameVersion === "v2") {
-      const categories = await themeRepo.listCategories();
-      room.settings = { ...room.settings, selectedCategories: categories.map((category) => category.id) };
-      await repo.saveRoom(room.roomCode, room);
-    }
+    const room = await repo.createRoom(hostPlayer);
+    const categories = await themeRepo.listCategories();
+    room.settings = { ...room.settings, selectedCategories: categories.map((category) => category.id) };
+    await repo.saveRoom(room.roomCode, room);
     log.info({ roomCode: room.roomCode, playerId }, "room created");
-    return { roomCode: room.roomCode, player: publicPlayer(hostPlayer), playerToken, gameVersion };
+    return { roomCode: room.roomCode, player: publicPlayer(hostPlayer), playerToken };
   }
 
   static async joinRoom(roomCode: string, username: string) {
@@ -107,7 +104,7 @@ export default class RoomService {
     room.players[playerId] = player;
     await repo.saveRoom(normalizedCode, room);
     log.info({ roomCode: normalizedCode, playerId }, "player joined");
-    return { roomCode: normalizedCode, player: publicPlayer(player), playerToken, gameVersion: room.gameVersion || "v1" };
+    return { roomCode: normalizedCode, player: publicPlayer(player), playerToken };
   }
 
   static async authenticatePlayer(roomCode: string, playerId: string, playerToken: string) {
@@ -239,14 +236,12 @@ export default class RoomService {
       throw Object.assign(new Error("Invalid game settings"), { code: "INVALID_PAYLOAD" });
     }
     const normalizedSettings = normalizeGameSettings(settings);
-    if ((room.gameVersion || "v1") === "v2") {
-      const categories = await themeRepo.listCategories();
-      const validIds = new Set(categories.map((category) => category.id));
-      const selected = normalizedSettings.selectedCategories || [];
-      if ((settings.selectedCategories || []).length !== selected.length) throw Object.assign(new Error("Duplicate game category"), { code: "INVALID_CATEGORY" });
-      if (selected.length < 2) throw Object.assign(new Error("Choose at least 2 categories"), { code: "MIN_CATEGORIES_REQUIRED" });
-      if (selected.some((category) => !validIds.has(category))) throw Object.assign(new Error("Invalid game category"), { code: "INVALID_CATEGORY" });
-    }
+    const categories = await themeRepo.listCategories();
+    const validIds = new Set(categories.map((category) => category.id));
+    const selected = normalizedSettings.selectedCategories;
+    if (settings.selectedCategories.length !== selected.length) throw Object.assign(new Error("Duplicate game category"), { code: "INVALID_CATEGORY" });
+    if (selected.length < 2) throw Object.assign(new Error("Choose at least 2 categories"), { code: "MIN_CATEGORIES_REQUIRED" });
+    if (selected.some((category) => !validIds.has(category))) throw Object.assign(new Error("Invalid game category"), { code: "INVALID_CATEGORY" });
     room.settings = normalizedSettings;
     await repo.saveRoom(normalizedCode, room);
     if (room.sessionId) {
@@ -280,7 +275,6 @@ export default class RoomService {
       roomCode: normalizedCode,
       createdAt: new Date(),
       status: "LOBBY",
-      gameVersion: room.gameVersion || "v1",
       settings: { ...settings },
       players: Object.values(room.players).map(publicPlayer),
       rounds: [],
@@ -317,20 +311,15 @@ export default class RoomService {
       });
     }
     room.settings = normalizeGameSettings(room.settings);
-    let themePool;
-    if ((room.gameVersion || "v1") === "v2") {
-      const categories = await themeRepo.listCategories();
-      const validIds = new Set(categories.map((category) => category.id));
-      const selected = (room.settings.selectedCategories || []).filter((category) => validIds.has(category));
-      room.settings = { ...room.settings, selectedCategories: selected };
-      if (selected.length < 2) {
-        await repo.saveRoom(normalizedCode, room);
-        throw Object.assign(new Error("Choose at least 2 categories"), { code: "MIN_CATEGORIES_REQUIRED" });
-      }
-      themePool = await themeRepo.balancedPool(selected, THEME_POOL_SIZE);
-    } else {
-      themePool = await themeRepo.randomPool(THEME_POOL_SIZE);
+    const categories = await themeRepo.listCategories();
+    const validIds = new Set(categories.map((category) => category.id));
+    const selected = room.settings.selectedCategories.filter((category) => validIds.has(category));
+    room.settings = { ...room.settings, selectedCategories: selected };
+    if (selected.length < 2) {
+      await repo.saveRoom(normalizedCode, room);
+      throw Object.assign(new Error("Choose at least 2 categories"), { code: "MIN_CATEGORIES_REQUIRED" });
     }
+    const themePool = await themeRepo.balancedPool(selected, THEME_POOL_SIZE);
     if (themePool.length < room.settings.totalRounds) {
       throw Object.assign(new Error("Not enough eligible themes"), {
         code: "NOT_ENOUGH_THEMES",
@@ -373,14 +362,13 @@ export default class RoomService {
         roomCode: normalizedCode,
         createdAt: new Date(),
         status: "ACTIVE",
-        gameVersion: room.gameVersion || "v1",
         settings: { ...room.settings },
         players: Object.values(room.players).map(publicPlayer),
         rounds: [],
       });
     } else {
       await sessionRepo.update(room.sessionId, {
-        $set: { status: "ACTIVE", gameVersion: room.gameVersion || "v1", settings: { ...room.settings }, players: Object.values(room.players).map(publicPlayer) },
+        $set: { status: "ACTIVE", settings: { ...room.settings }, players: Object.values(room.players).map(publicPlayer) },
       });
     }
     await repo.saveRoom(normalizedCode, room);
@@ -423,9 +411,7 @@ export default class RoomService {
         ...room.game.rejectedThemeIds,
         room.game.currentTheme.id,
       ];
-      const extraThemes = (room.gameVersion || "v1") === "v2"
-        ? await themeRepo.balancedPool(room.settings.selectedCategories || [], THEME_POOL_SIZE, seenIds)
-        : await themeRepo.randomPool(THEME_POOL_SIZE, seenIds);
+      const extraThemes = await themeRepo.balancedPool(room.settings.selectedCategories, THEME_POOL_SIZE, seenIds);
       if (extraThemes.length === 0) {
         throw Object.assign(new Error("Theme pool exhausted"), { code: "THEME_POOL_EXHAUSTED" });
       }
@@ -510,22 +496,15 @@ export default class RoomService {
   }
 
   static async moveListening(roomCode: string, requesterId: string, direction: "next" | "previous") {
-    const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
-    if (!room.game) throw new Error("Game state missing");
-    if (room.gameVersion === "v2") throw Object.assign(new Error("V2 listening navigation is local"), { code: "LOCAL_LISTENING_NAVIGATION" });
-    const maxIndex = room.game.submissionGroups.length;
-    room.game.listeningIndex = direction === "next"
-      ? Math.min(room.game.listeningIndex + 1, maxIndex)
-      : Math.max(room.game.listeningIndex - 1, 0);
-    await repo.saveRoom(room.roomCode, room);
-    return this.toListeningState(room);
+    await this.requireHostPhase(roomCode, requesterId, "LISTENING");
+    void direction;
+    throw Object.assign(new Error("Listening navigation is local to each player"), { code: "LOCAL_LISTENING_NAVIGATION" });
   }
 
   static async setListeningReady(roomCode: string, requesterId: string, ready: boolean): Promise<PublicListeningState> {
     const normalizedCode = this.normalizeRoomCode(roomCode);
     const room = await this.getRoomWithCleanup(normalizedCode);
     if (!room?.game || room.status !== "LISTENING") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
-    if (room.gameVersion !== "v2") throw Object.assign(new Error("Ready is only available in V2"), { code: "INVALID_GAME_VERSION" });
     const player = room.players[requesterId];
     const eligible = player && !player.isHost && player.isPlaying && player.participationStatus === "ACTIVE" && room.game.roundParticipantIds.includes(requesterId);
     if (!eligible) throw Object.assign(new Error("Player is not eligible for ready"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
@@ -550,13 +529,9 @@ export default class RoomService {
   static async startVoting(roomCode: string, requesterId: string): Promise<number> {
     const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
     if (!room.game) throw new Error("Game state missing");
-    if (room.gameVersion === "v2") {
-      const eligibleIds = this.eligibleListeningReadyPlayers(room).map((player) => player.playerId);
-      const readyCount = (room.game.listeningReadyPlayerIds || []).filter((id) => eligibleIds.includes(id)).length;
-      if (eligibleIds.length > 0 && readyCount < 1) throw Object.assign(new Error("Waiting for a ready player"), { code: "LISTENING_READY_REQUIRED" });
-    } else if (room.game.listeningIndex < room.game.submissionGroups.length) {
-      throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
-    }
+    const eligibleIds = this.eligibleListeningReadyPlayers(room).map((player) => player.playerId);
+    const readyCount = (room.game.listeningReadyPlayerIds || []).filter((id) => eligibleIds.includes(id)).length;
+    if (eligibleIds.length > 0 && readyCount < 1) throw Object.assign(new Error("Waiting for a ready player"), { code: "LISTENING_READY_REQUIRED" });
     room.game.phase = "VOTING";
     room.game.votingStartedAt = Date.now();
     room.game.votingEndsAt = room.game.votingStartedAt + VOTING_DURATION_MS;
@@ -650,7 +625,6 @@ export default class RoomService {
     room.status = "ROUND_RESULTS";
     room.game.roundResult = { round: room.game.round, totalRounds: room.game.totalRounds, theme: room.game.currentTheme, revealStage: "AUTHORS", ranking, leaderboard: this.toLeaderboard(room), isLastRound: room.game.round >= room.game.totalRounds };
     await repo.saveRoom(normalizedCode, room);
-    if (room.sessionId && room.gameVersion === "v1") await sessionRepo.update(room.sessionId, { $push: { rounds: { roundNumber: room.game.round, theme: room.game.currentTheme, ranking, votes: room.game.votes } } });
     return room.game.roundResult;
   }
 
@@ -724,14 +698,14 @@ export default class RoomService {
   private static toListeningState(room: Room): PublicListeningState {
     if (!room.game) throw new Error("Game state missing");
     const group = room.game.submissionGroups[room.game.listeningIndex];
-    const readyPlayers = room.gameVersion === "v2" ? this.eligibleListeningReadyPlayers(room).map((player) => ({
+    const readyPlayers = this.eligibleListeningReadyPlayers(room).map((player) => ({
       playerId: player.playerId,
       username: player.username,
       ready: (room.game!.listeningReadyPlayerIds || []).includes(player.playerId),
-    })) : [];
-    const finished = room.gameVersion === "v2" ? Boolean(room.game.listeningFinished) : room.game.listeningIndex >= room.game.submissionGroups.length;
+    }));
+    const finished = Boolean(room.game.listeningFinished);
     const readyCount = readyPlayers.filter((player) => player.ready).length;
-    const items = room.gameVersion === "v2" ? room.game.submissionGroups.map((submissionGroup) => submissionGroup.publicMedia) : [];
+    const items = room.game.submissionGroups.map((submissionGroup) => submissionGroup.publicMedia);
     return { theme: room.game.currentTheme, index: room.game.listeningIndex, total: room.game.submissionGroups.length, current: group?.publicMedia ?? null, items, finished, votingEnabled: room.game.votingEnabled, readyPlayers, readyCount, eligibleReadyCount: readyPlayers.length, canStartVoting: readyCount >= 1 || readyPlayers.length === 0 };
   }
 
@@ -758,12 +732,12 @@ export default class RoomService {
     const room = await this.getRoomWithCleanup(normalizedCode);
     if (!room) throw roomNotFound();
     if (!room.players[requesterId]?.isHost) throw Object.assign(new Error("Host only action"), { code: "FORBIDDEN" });
-    if (room.gameVersion === "v2" && room.status === "GAME_RESULTS") return this.toPublicState(room);
+    if (room.status === "GAME_RESULTS") return this.toPublicState(room);
     if (!room.game || room.status !== "ROUND_RESULTS") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
     if (room.game.round >= room.game.totalRounds) {
-      if (room.gameVersion === "v2" && room.sessionId) {
+      if (room.sessionId) {
         const analysis = room.game.finalAnalysis || FinalAnalysisService.calculate(room.game.historicalRounds || []);
-        await sessionRepo.finalizeV2(room.sessionId, {
+        await sessionRepo.finalize(room.sessionId, {
           finishedAt: new Date(),
           players: this.historicalPlayers(room),
           rounds: room.game.historicalRounds || [],
@@ -771,14 +745,9 @@ export default class RoomService {
           analysis,
         });
         room.game.finalAnalysis = analysis;
-      } else if (room.sessionId) {
-        await sessionRepo.update(room.sessionId, {
-          $set: { status: "FINISHED", finishedAt: new Date(), finalRanking: this.toLeaderboard(room) },
-        });
       }
       room.status = "GAME_RESULTS";
-      if (room.gameVersion === "v2") await repo.saveCompletedRoom(normalizedCode, room);
-      else await repo.saveRoom(normalizedCode, room);
+      await repo.saveCompletedRoom(normalizedCode, room);
       return this.toPublicState(room);
     }
     const nextTheme = room.game.themePool[room.game.themePoolIndex + 1];
@@ -800,7 +769,6 @@ export default class RoomService {
   private static async getRoomWithCleanup(roomCode: string): Promise<Room | null> {
     const room = await repo.getRoom(roomCode);
     if (!room) return null;
-    room.gameVersion ||= "v1";
     room.settings = normalizeGameSettings(room.settings);
     let settingsChanged = false;
     if (room.game) {
@@ -808,13 +776,11 @@ export default class RoomService {
       if (!Array.isArray(room.game.listeningReadyPlayerIds)) { room.game.listeningReadyPlayerIds = []; settingsChanged = true; }
       if (!Array.isArray(room.game.historicalRounds)) { room.game.historicalRounds = []; settingsChanged = true; }
     }
-    if (room.gameVersion === "v2") {
-      const validIds = new Set((await themeRepo.listCategories()).map((category) => category.id));
-      const selectedCategories = (room.settings.selectedCategories || []).filter((category) => validIds.has(category));
-      if (selectedCategories.length !== (room.settings.selectedCategories || []).length) {
-        room.settings = { ...room.settings, selectedCategories };
-        settingsChanged = true;
-      }
+    const validIds = new Set((await themeRepo.listCategories()).map((category) => category.id));
+    const selectedCategories = room.settings.selectedCategories.filter((category) => validIds.has(category));
+    if (selectedCategories.length !== room.settings.selectedCategories.length) {
+      room.settings = { ...room.settings, selectedCategories };
+      settingsChanged = true;
     }
     const now = Date.now();
     const expired = Object.values(room.players).filter(
@@ -853,7 +819,6 @@ export default class RoomService {
       roomCode: room.roomCode,
       sessionId: room.sessionId,
       status: room.status,
-      gameVersion: room.gameVersion || "v1",
       host: publicPlayer(host),
       players: Object.values(room.players)
         .filter((player) => !player.isHost)
@@ -952,8 +917,8 @@ export default class RoomService {
   }
 
   static async getFinishedResult(sessionId: string): Promise<GameFinishedView | null> {
-    const record = await sessionRepo.findResult(sessionId) as { sessionId?: string; gameVersion?: GameVersion; finalRanking?: GameFinishedView["leaderboard"]; analysis?: FinalAnalysis } | null;
-    if (!record?.sessionId || record.gameVersion !== "v2") return null;
+    const record = await sessionRepo.findResult(sessionId) as { sessionId?: string; finalRanking?: GameFinishedView["leaderboard"]; analysis?: FinalAnalysis } | null;
+    if (!record?.sessionId) return null;
     return { sessionId: record.sessionId, leaderboard: record.finalRanking || [], ...(record.analysis ? { analysis: this.toPublicAnalysis(record.analysis) } : {}) };
   }
 

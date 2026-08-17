@@ -22,15 +22,15 @@ export interface Theme {
 
 export type TotalRounds = 3 | 5 | 10;
 export type ChoosingDurationSeconds = 180 | 360 | 540;
-export type GameVersion = "v1" | "v2";
 export interface GameSettings {
   totalRounds: TotalRounds;
   choosingDurationSeconds: ChoosingDurationSeconds;
-  selectedCategories?: string[];
+  selectedCategories: string[];
 }
 export const DEFAULT_GAME_SETTINGS: GameSettings = {
   totalRounds: 10,
   choosingDurationSeconds: 180,
+  selectedCategories: [],
 };
 export const VALID_TOTAL_ROUNDS: readonly TotalRounds[] = [3, 5, 10];
 export const VALID_CHOOSING_DURATIONS: readonly ChoosingDurationSeconds[] = [180, 360, 540];
@@ -45,8 +45,8 @@ export function normalizeGameSettings(settings?: Partial<GameSettings> | null): 
     : DEFAULT_GAME_SETTINGS.choosingDurationSeconds;
   const selectedCategories = Array.isArray(settings?.selectedCategories)
     ? [...new Set(settings.selectedCategories.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))]
-    : undefined;
-  return { totalRounds, choosingDurationSeconds, ...(selectedCategories ? { selectedCategories } : {}) };
+    : [];
+  return { totalRounds, choosingDurationSeconds, selectedCategories };
 }
 
 export interface GameCategory {

@@ -51,7 +51,7 @@ vi.mock("../src/repositories/MongoSessionRepository", () => ({
   default: class {
     async create(session: Record<string, unknown>) { mongoCreates.push(session); return null; }
     async update(sessionId: string, patch: Record<string, unknown>) { mongoUpdates.push({ sessionId, patch }); return null; }
-    async finalizeV2(sessionId: string, snapshot: Record<string, unknown>) { if (finalizationFailure.enabled) throw new Error("mongo unavailable"); mongoFinalizations.push({ sessionId, snapshot }); return { sessionId, gameVersion: "v2", ...snapshot }; }
+    async finalize(sessionId: string, snapshot: Record<string, unknown>) { if (finalizationFailure.enabled) throw new Error("mongo unavailable"); mongoFinalizations.push({ sessionId, snapshot }); return { sessionId, ...snapshot }; }
     async findResult() { return null; }
   },
 }));
@@ -149,12 +149,12 @@ describe("room player lifecycle", () => {
     expect(state.status).toBe("THEME_REVEAL");
   });
 
-  it("configures V2 categories from real availability and balances the preselected pool", async () => {
-    const host = await RoomService.createRoom("Host", true, "v2");
+  it("configures categories from real availability and balances the preselected pool", async () => {
+    const host = await RoomService.createRoom("Host", true);
     const bruno = await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.joinRoom(host.roomCode, "Carol");
     const initial = await RoomService.getPublicRoomState(host.roomCode);
-    expect(initial).toMatchObject({ gameVersion: "v2", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+    expect(initial).toMatchObject({ settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
     await expect(RoomService.updateSettings(host.roomCode, bruno.player.playerId, { ...initial.settings, selectedCategories: ["INSTRUMENTS", "ALBUM"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(RoomService.updateSettings(host.roomCode, host.player.playerId, { ...initial.settings, selectedCategories: ["INSTRUMENTS"] })).rejects.toMatchObject({ code: "MIN_CATEGORIES_REQUIRED" });
     await expect(RoomService.updateSettings(host.roomCode, host.player.playerId, { ...initial.settings, selectedCategories: ["INSTRUMENTS", "INVALID"] })).rejects.toMatchObject({ code: "INVALID_CATEGORY" });
@@ -165,16 +165,16 @@ describe("room player lifecycle", () => {
     expect(new Set(firstTen.map((theme: { id: string }) => theme.id)).size).toBe(10);
     const counts = firstTen.reduce((result: Record<string, number>, theme: { category: string }) => ({ ...result, [theme.category]: (result[theme.category] || 0) + 1 }), {});
     expect(Math.max(...Object.values(counts)) - Math.min(...Object.values(counts))).toBeLessThanOrEqual(1);
-    expect(mongoCreates.at(-1)).toMatchObject({ gameVersion: "v2", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+    expect(mongoCreates.at(-1)).toMatchObject({ settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
     stored.status = "GAME_RESULTS";
     redisStore.set(`room:${host.roomCode}`, JSON.stringify(stored));
     const replay = await RoomService.restartGame(host.roomCode, host.player.playerId);
-    expect(replay).toMatchObject({ gameVersion: "v2", status: "LOBBY", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
-    expect(mongoCreates.at(-1)).toMatchObject({ gameVersion: "v2", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+    expect(replay).toMatchObject({ status: "LOBBY", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+    expect(mongoCreates.at(-1)).toMatchObject({ settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
   });
 
-  it("rejects a V2 category combination with an insufficient distinct theme pool", async () => {
-    const host = await RoomService.createRoom("Host", true, "v2");
+  it("rejects a category combination with an insufficient distinct theme pool", async () => {
+    const host = await RoomService.createRoom("Host", true);
     await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.joinRoom(host.roomCode, "Carol");
     const state = await RoomService.getPublicRoomState(host.roomCode);
@@ -187,11 +187,11 @@ describe("room player lifecycle", () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.joinRoom(host.roomCode, "Carol");
-    expect((await RoomService.getPublicRoomState(host.roomCode)).settings).toEqual({ totalRounds: 10, choosingDurationSeconds: 180 });
+    expect((await RoomService.getPublicRoomState(host.roomCode)).settings).toEqual({ totalRounds: 10, choosingDurationSeconds: 180, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
 
-    await expect(RoomService.updateSettings(host.roomCode, player.player.playerId, { totalRounds: 5, choosingDurationSeconds: 360 })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    const updated = await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 5, choosingDurationSeconds: 360 });
-    expect(updated.settings).toEqual({ totalRounds: 5, choosingDurationSeconds: 360 });
+    await expect(RoomService.updateSettings(host.roomCode, player.player.playerId, { totalRounds: 5, choosingDurationSeconds: 360, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const updated = await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 5, choosingDurationSeconds: 360, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
+    expect(updated.settings).toEqual({ totalRounds: 5, choosingDurationSeconds: 360, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
     await RoomService.startGame(host.roomCode, host.player.playerId);
     const choosing = await RoomService.startRound(host.roomCode, host.player.playerId);
     expect(choosing.game?.totalRounds).toBe(5);
@@ -204,7 +204,7 @@ describe("room player lifecycle", () => {
     const player = await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.joinRoom(host.roomCode, "Rafa");
-    await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 540 });
+    await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 540, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
     await RoomService.startGame(host.roomCode, host.player.playerId);
     const before = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
     const previousSessionId = before.sessionId as string;
@@ -220,8 +220,8 @@ describe("room player lifecycle", () => {
     expect(after.players[player.player.playerId]).toMatchObject({ playerId: player.player.playerId, playerToken: player.playerToken, participationStatus: "ACTIVE" });
     expect(mongoUpdates.some((item) => item.sessionId === previousSessionId)).toBe(true);
     expect(mongoCreates.at(-1)).toMatchObject({ roomCode: host.roomCode, status: "LOBBY", settings: { totalRounds: 3, choosingDurationSeconds: 540 }, rounds: [] });
-    const edited = await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 10, choosingDurationSeconds: 180 });
-    expect(edited.settings).toEqual({ totalRounds: 10, choosingDurationSeconds: 180 });
+    const edited = await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 10, choosingDurationSeconds: 180, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
+    expect(edited.settings).toEqual({ totalRounds: 10, choosingDurationSeconds: 180, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
     await expect(RoomService.restartGame(host.roomCode, host.player.playerId)).rejects.toMatchObject({ code: "INVALID_PHASE" });
   });
 
@@ -229,7 +229,7 @@ describe("room player lifecycle", () => {
     const host = await RoomService.createRoom("Host", true);
     await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.joinRoom(host.roomCode, "Carol");
-    await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 180 });
+    await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 180, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
     await RoomService.startGame(host.roomCode, host.player.playerId);
     const stored = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
     stored.status = "ROUND_RESULTS";
@@ -238,11 +238,11 @@ describe("room player lifecycle", () => {
     redisStore.set(`room:${host.roomCode}`, JSON.stringify(stored));
     const finished = await RoomService.prepareNextRound(host.roomCode, host.player.playerId);
     expect(finished.status).toBe("GAME_RESULTS");
-    expect(mongoUpdates.at(-1)?.patch).toMatchObject({ $set: { status: "FINISHED" } });
+    expect(mongoFinalizations).toHaveLength(1);
   });
 
-  it("consolidates a V2 final snapshot once, keeps retry possible on Mongo failure, and applies the finished TTL", async () => {
-    const host = await RoomService.createRoom("Host", true, "v2");
+  it("consolidates a final snapshot once, keeps retry possible on Mongo failure, and applies the finished TTL", async () => {
+    const host = await RoomService.createRoom("Host", true);
     await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
@@ -328,8 +328,7 @@ describe("room player lifecycle", () => {
 
     const listening = await RoomService.startListening(host.roomCode, host.player.playerId);
     expect(listening.total).toBe(2);
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.setListeningReady(host.roomCode, pedro.player.playerId, true);
     const votingEndsAt = await RoomService.startVoting(host.roomCode, host.player.playerId);
     expect(votingEndsAt - Date.now()).toBe(60_000);
 
@@ -384,8 +383,7 @@ describe("room player lifecycle", () => {
     await RoomService.submitChoice(host.roomCode, ana.player.playerId, { source: "SPOTIFY", title: "Nightcall", spotifyTrackId: "nightcall" });
     await RoomService.submitChoice(host.roomCode, rafa.player.playerId, { source: "SPOTIFY", title: "Nightcall", spotifyTrackId: "nightcall" });
     await RoomService.startListening(host.roomCode, host.player.playerId);
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.setListeningReady(host.roomCode, luiz.player.playerId, true);
     await RoomService.startVoting(host.roomCode, host.player.playerId);
 
     const luizView = await RoomService.getVotingView(host.roomCode, luiz.player.playerId);
@@ -411,8 +409,8 @@ describe("room player lifecycle", () => {
     expect(restored).toEqual(before);
   });
 
-  it("keeps V2 listening authoritative and gates voting with non-host readiness", async () => {
-    const host = await RoomService.createRoom("Host", true, "v2");
+  it("keeps listening authoritative and gates voting with non-host readiness", async () => {
+    const host = await RoomService.createRoom("Host", true);
     const carol = await RoomService.joinRoom(host.roomCode, "Carol");
     const bruno = await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.startGame(host.roomCode, host.player.playerId);
@@ -442,8 +440,8 @@ describe("room player lifecycle", () => {
     expect((await RoomService.startVoting(host.roomCode, host.player.playerId)) - Date.now()).toBe(60_000);
   });
 
-  it("allows V2 host to start voting when there are zero eligible non-host players", async () => {
-    const host = await RoomService.createRoom("Host", true, "v2");
+  it("allows the host to start voting when there are zero eligible non-host players", async () => {
+    const host = await RoomService.createRoom("Host", true);
     const carol = await RoomService.joinRoom(host.roomCode, "Carol");
     const bruno = await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.startGame(host.roomCode, host.player.playerId);
