@@ -8,6 +8,12 @@ import {
   THEME_POOL_SIZE,
   ThemeReaction,
   TOTAL_ROUNDS,
+  GroupVote,
+  PublicListeningState,
+  Submission,
+  SubmissionGroup,
+  SubmissionInput,
+  VotingView,
 } from "../game/gameTypes";
 
 const repo = new RedisRoomRepository();
@@ -227,6 +233,11 @@ export default class RoomService {
       rejectedThemeIds: [],
       currentTheme: themePool[0],
       reactions: {},
+      submissions: {},
+      submissionGroups: [],
+      listeningIndex: 0,
+      votingEnabled: true,
+      votes: {},
     };
     room.status = "THEME_REVEAL";
     await repo.saveRoom(normalizedCode, room);
@@ -295,10 +306,192 @@ export default class RoomService {
       throw Object.assign(new Error("Round has already started"), { code: "INVALID_PHASE" });
     }
     room.game.playedThemeIds.push(room.game.currentTheme.id);
-    room.game.phase = "PLAYING";
+    room.game.phase = "CHOOSING";
     room.status = "CHOOSING";
     await repo.saveRoom(normalizedCode, room);
     return this.toPublicState(room);
+  }
+
+  static async submitChoice(roomCode: string, playerId: string, input: SubmissionInput) {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    const player = room.players[playerId];
+    if (!player?.isPlaying) throw Object.assign(new Error("Player cannot submit"), { code: "FORBIDDEN" });
+    if (!room.game || room.status !== "CHOOSING") throw Object.assign(new Error("Submissions are closed"), { code: "INVALID_PHASE" });
+    this.validateSubmission(input, room.game.currentTheme.type);
+    const submission: Submission = {
+      ...input,
+      startTime: input.startTime ?? 0,
+      submissionId: generateId("submission"),
+      playerId,
+      likes: 0,
+      dislikes: 0,
+    };
+    room.game.submissions[playerId] = submission;
+    await repo.saveRoom(normalizedCode, room);
+    return submission;
+  }
+
+  static async startListening(roomCode: string, requesterId: string): Promise<PublicListeningState> {
+    const room = await this.requireHostPhase(roomCode, requesterId, "CHOOSING");
+    if (!room.game) throw new Error("Game state missing");
+    const playingIds = Object.values(room.players).filter((player) => player.isPlaying).map((player) => player.playerId);
+    if (playingIds.some((id) => !room.game?.submissions[id])) {
+      throw Object.assign(new Error("Waiting for player submissions"), { code: "SUBMISSIONS_PENDING" });
+    }
+    room.game.submissionGroups = this.shuffleGroups(this.groupSubmissions(Object.values(room.game.submissions)));
+    room.game.listeningIndex = 0;
+    room.game.phase = "LISTENING";
+    room.status = "LISTENING";
+    await repo.saveRoom(room.roomCode, room);
+    return this.toListeningState(room);
+  }
+
+  static async moveListening(roomCode: string, requesterId: string, direction: "next" | "previous") {
+    const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
+    if (!room.game) throw new Error("Game state missing");
+    const maxIndex = room.game.submissionGroups.length;
+    room.game.listeningIndex = direction === "next"
+      ? Math.min(room.game.listeningIndex + 1, maxIndex)
+      : Math.max(room.game.listeningIndex - 1, 0);
+    await repo.saveRoom(room.roomCode, room);
+    return this.toListeningState(room);
+  }
+
+  static async getListeningState(roomCode: string): Promise<PublicListeningState | null> {
+    const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
+    return room?.game && room.status === "LISTENING" ? this.toListeningState(room) : null;
+  }
+
+  static async hasPlayerSubmitted(roomCode: string, playerId: string): Promise<boolean> {
+    const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
+    return Boolean(room?.game?.submissions[playerId]);
+  }
+
+  static async startVoting(roomCode: string, requesterId: string): Promise<void> {
+    const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
+    if (!room.game) throw new Error("Game state missing");
+    if (room.game.listeningIndex < room.game.submissionGroups.length) {
+      throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
+    }
+    room.game.phase = "VOTING";
+    room.status = "VOTING";
+    await repo.saveRoom(room.roomCode, room);
+  }
+
+  static async getVotingView(roomCode: string, playerId: string): Promise<VotingView | null> {
+    const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
+    if (!room?.game || room.status !== "VOTING") return null;
+    const player = room.players[playerId];
+    if (!player) throw roomNotFound();
+    const own = room.game.submissions[playerId];
+    return {
+      ownSubmission: own ? this.toPublicMedia(own) : null,
+      groups: room.game.submissionGroups
+        .filter((group) => group.submissions.some((submission) => submission.playerId !== playerId))
+        .map((group) => ({ groupId: group.groupId, media: group.publicMedia, canVote: player.isPlaying })),
+      hasVoted: Boolean(room.game.votes[playerId]),
+      canVote: player.isPlaying,
+      votedPlayers: player.isHost ? Object.keys(room.game.votes) : [],
+      eligiblePlayersCount: Object.values(room.players).filter((item) => item.isPlaying).length,
+    };
+  }
+
+  static async submitVote(roomCode: string, playerId: string, vote: GroupVote): Promise<void> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room?.game || room.status !== "VOTING") throw Object.assign(new Error("Voting is closed"), { code: "INVALID_PHASE" });
+    if (!room.players[playerId]?.isPlaying) throw Object.assign(new Error("Player cannot vote"), { code: "FORBIDDEN" });
+    if (room.game.votes[playerId]) throw Object.assign(new Error("Player already voted"), { code: "ALREADY_VOTED" });
+    if (vote.likedGroupId === vote.dislikedGroupId) throw Object.assign(new Error("Votes must target different groups"), { code: "INVALID_VOTE" });
+    const liked = room.game.submissionGroups.find((group) => group.groupId === vote.likedGroupId);
+    const disliked = room.game.submissionGroups.find((group) => group.groupId === vote.dislikedGroupId);
+    const eligible = (group?: SubmissionGroup) => group?.submissions.filter((submission) => submission.playerId !== playerId) ?? [];
+    const likedSubmissions = eligible(liked);
+    const dislikedSubmissions = eligible(disliked);
+    if (!liked || !disliked || likedSubmissions.length === 0 || dislikedSubmissions.length === 0) {
+      throw Object.assign(new Error("Vote group is not eligible"), { code: "INVALID_VOTE" });
+    }
+    const canonicalSubmissions = Object.values(room.game.submissions);
+    const applyVote = (submissions: Submission[], reaction: "likes" | "dislikes") => {
+      for (const groupedSubmission of submissions) {
+        const canonical = canonicalSubmissions.find(
+          (submission) => submission.submissionId === groupedSubmission.submissionId,
+        );
+        if (canonical) canonical[reaction] += 1;
+      }
+    };
+    applyVote(likedSubmissions, "likes");
+    applyVote(dislikedSubmissions, "dislikes");
+    room.game.votes[playerId] = vote;
+    await repo.saveRoom(normalizedCode, room);
+  }
+
+  private static validateSubmission(input: SubmissionInput, themeType: string): void {
+    const spotify = input.source === "SPOTIFY" && Boolean(input.spotifyTrackId);
+    const youtube = input.source === "YOUTUBE" && Boolean(input.youtubeVideoId);
+    const sourceMatchesTheme =
+      ((themeType === "MUSIC" || themeType === "ALBUM") && spotify) ||
+      ((themeType === "MOMENT" || themeType === "YT_NOTIME") && youtube);
+    if (!input.title.trim() || !sourceMatchesTheme || (themeType === "MOMENT" && input.startTime === undefined)) {
+      throw Object.assign(new Error("Invalid submission"), { code: "INVALID_PAYLOAD" });
+    }
+  }
+
+  private static mediaKey(submission: Submission): string {
+    return submission.source === "SPOTIFY"
+      ? `spotify:track:${submission.spotifyTrackId}`
+      : `youtube:${submission.youtubeVideoId}:${submission.startTime ?? 0}`;
+  }
+
+  private static toPublicMedia(submission: Submission) {
+    const startTime = submission.startTime ?? 0;
+    return {
+      source: submission.source,
+      title: submission.title,
+      ...(submission.artist ? { artist: submission.artist } : {}),
+      ...(submission.spotifyTrackId ? { spotifyTrackId: submission.spotifyTrackId } : {}),
+      ...(submission.youtubeVideoId ? { youtubeVideoId: submission.youtubeVideoId } : {}),
+      startTime,
+      ...(submission.thumbnail ? { thumbnail: submission.thumbnail } : {}),
+      externalUrl: submission.source === "SPOTIFY"
+        ? `https://open.spotify.com/track/${submission.spotifyTrackId}`
+        : `https://www.youtube.com/watch?v=${submission.youtubeVideoId}&t=${startTime}s`,
+    };
+  }
+
+  private static groupSubmissions(submissions: Submission[]): SubmissionGroup[] {
+    const groups = new Map<string, SubmissionGroup>();
+    for (const submission of submissions) {
+      const mediaKey = this.mediaKey(submission);
+      const group = groups.get(mediaKey);
+      if (group) group.submissions.push(submission);
+      else groups.set(mediaKey, { groupId: generateId("group"), mediaKey, submissions: [submission], publicMedia: this.toPublicMedia(submission) });
+    }
+    return [...groups.values()];
+  }
+
+  private static shuffleGroups(groups: SubmissionGroup[]): SubmissionGroup[] {
+    for (let index = groups.length - 1; index > 0; index -= 1) {
+      const target = Math.floor(Math.random() * (index + 1));
+      [groups[index], groups[target]] = [groups[target], groups[index]];
+    }
+    return groups;
+  }
+
+  private static toListeningState(room: Room): PublicListeningState {
+    if (!room.game) throw new Error("Game state missing");
+    const group = room.game.submissionGroups[room.game.listeningIndex];
+    return { theme: room.game.currentTheme, index: room.game.listeningIndex, total: room.game.submissionGroups.length, current: group?.publicMedia ?? null, finished: room.game.listeningIndex >= room.game.submissionGroups.length, votingEnabled: room.game.votingEnabled };
+  }
+
+  private static async requireHostPhase(roomCode: string, requesterId: string, status: string): Promise<Room> {
+    const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
+    if (!room) throw roomNotFound();
+    if (!room.players[requesterId]?.isHost) throw Object.assign(new Error("Host only action"), { code: "FORBIDDEN" });
+    if (room.status !== status) throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
+    return room;
   }
 
   static async getPlayerThemeReaction(roomCode: string, playerId: string) {

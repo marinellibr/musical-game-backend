@@ -31,5 +31,12 @@ export async function authenticateAndJoin(
     themeId: state.game?.currentTheme.id,
     reaction: await RoomService.getPlayerThemeReaction(authenticated.roomCode, playerId),
   });
+  const listening = await RoomService.getListeningState(authenticated.roomCode);
+  if (listening) socket.emit("listening:state", listening);
+  const voting = await RoomService.getVotingView(authenticated.roomCode, playerId);
+  if (voting) socket.emit("voting:state", voting);
+  if (await RoomService.hasPlayerSubmitted(authenticated.roomCode, playerId)) {
+    socket.emit("submission:status", { submitted: true });
+  }
   return authenticated;
 }

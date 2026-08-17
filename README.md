@@ -63,3 +63,9 @@ Theme-selection Socket.IO events:
 - `theme:swap` — host rejects the candidate and consumes the next pooled theme
 - `round:start` — host confirms the candidate and advances everyone to gameplay
 - `room:state` — server broadcasts the typed public room/game state
+- `submission:create` / `submission:status` — stores a typed player choice
+- `listening:start`, `listening:previous`, `listening:next` — host controls anonymous grouped playback
+- `listening:state` — broadcasts the current deduplicated public media
+- `voting:start` — host opens voting after all groups were heard
+- `voting:state` — sends an author-free, player-specific voting DTO
+- `vote:submit` — accepts one liked and one disliked group ID

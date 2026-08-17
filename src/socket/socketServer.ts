@@ -5,6 +5,7 @@ import { corsOrigins, PLAYER_RECONNECT_TTL_MS } from "../config/env";
 import RoomService from "../rooms/RoomService";
 import { authenticateAndJoin } from "./roomHandlers";
 import { ThemeReaction } from "../game/gameTypes";
+import { GroupVote, SubmissionInput } from "../game/gameTypes";
 
 const log = logger();
 
@@ -30,6 +31,14 @@ export function initSocket(httpServer: HttpServer) {
       () => { if (roomActions.get(roomCode) === current) roomActions.delete(roomCode); },
     );
     return current;
+  };
+
+  const emitVotingViews = async (roomCode: string) => {
+    const roomSockets = await io.in(roomCode).fetchSockets();
+    await Promise.all(roomSockets.map(async (target) => {
+      const playerId = target.data.playerId as string | undefined;
+      if (playerId) target.emit("voting:state", await RoomService.getVotingView(roomCode, playerId));
+    }));
   };
 
   const connectPlayer = async (socket: Socket, payload: Record<string, unknown>) => {
@@ -151,6 +160,64 @@ export function initSocket(httpServer: HttpServer) {
       } catch (error) {
         socketError(socket, error);
       }
+    });
+    socket.on("submission:create", async (payload: SubmissionInput) => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const playerId = socket.data.playerId as string | undefined;
+      if (!roomCode || !playerId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          await RoomService.submitChoice(roomCode, playerId, payload);
+          socket.emit("submission:status", { submitted: true });
+        });
+      } catch (error) { socketError(socket, error); }
+    });
+    socket.on("listening:start", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          const state = await RoomService.startListening(roomCode, requesterId);
+          io.to(roomCode).emit("listening:state", state);
+          io.to(roomCode).emit("room:state", await RoomService.getPublicRoomState(roomCode));
+        });
+      } catch (error) { socketError(socket, error); }
+    });
+    for (const direction of ["next", "previous"] as const) {
+      socket.on(`listening:${direction}`, async () => {
+        const roomCode = socket.data.roomCode as string | undefined;
+        const requesterId = socket.data.playerId as string | undefined;
+        if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+        try {
+          await runRoomAction(roomCode, async () => {
+            io.to(roomCode).emit("listening:state", await RoomService.moveListening(roomCode, requesterId, direction));
+          });
+        } catch (error) { socketError(socket, error); }
+      });
+    }
+    socket.on("voting:start", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          await RoomService.startVoting(roomCode, requesterId);
+          io.to(roomCode).emit("room:state", await RoomService.getPublicRoomState(roomCode));
+          await emitVotingViews(roomCode);
+        });
+      } catch (error) { socketError(socket, error); }
+    });
+    socket.on("vote:submit", async (payload: GroupVote) => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const playerId = socket.data.playerId as string | undefined;
+      if (!roomCode || !playerId || !payload?.likedGroupId || !payload?.dislikedGroupId) return socketError(socket, Object.assign(new Error("Invalid vote"), { code: "INVALID_PAYLOAD" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          await RoomService.submitVote(roomCode, playerId, payload);
+          await emitVotingViews(roomCode);
+        });
+      } catch (error) { socketError(socket, error); }
     });
     socket.on("disconnect", async () => {
       log.info({ id: socket.id }, "socket disconnected");

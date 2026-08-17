@@ -150,9 +150,96 @@ describe("room player lifecycle", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const started = await RoomService.startRound(host.roomCode, host.player.playerId);
-    expect(started).toMatchObject({ status: "CHOOSING", game: { phase: "PLAYING" } });
+    expect(started).toMatchObject({ status: "CHOOSING", game: { phase: "CHOOSING" } });
     await expect(
       RoomService.startRound(host.roomCode, host.player.playerId),
     ).rejects.toMatchObject({ code: "INVALID_PHASE" });
+  });
+
+  it("deduplicates playback and distributes grouped votes only to other players", async () => {
+    const host = await RoomService.createRoom("Luiz", true);
+    const pedro = await RoomService.joinRoom(host.roomCode, "Pedro");
+    const ana = await RoomService.joinRoom(host.roomCode, "Ana");
+    const joao = await RoomService.joinRoom(host.roomCode, "João");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    const midnight = { source: "SPOTIFY" as const, title: "Midnight City", artist: "M83", spotifyTrackId: "midnight" };
+    await RoomService.submitChoice(host.roomCode, host.player.playerId, midnight);
+    await RoomService.submitChoice(host.roomCode, pedro.player.playerId, midnight);
+    await RoomService.submitChoice(host.roomCode, ana.player.playerId, midnight);
+    await RoomService.submitChoice(host.roomCode, joao.player.playerId, { source: "SPOTIFY", title: "Nightcall", spotifyTrackId: "nightcall" });
+
+    const listening = await RoomService.startListening(host.roomCode, host.player.playerId);
+    expect(listening.total).toBe(2);
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.startVoting(host.roomCode, host.player.playerId);
+
+    const view = await RoomService.getVotingView(host.roomCode, host.player.playerId);
+    expect(view?.ownSubmission?.title).toBe("Midnight City");
+    expect(view?.groups.map((group) => group.media.title).sort()).toEqual(["Midnight City", "Nightcall"]);
+    const midnightGroup = view?.groups.find((group) => group.media.title === "Midnight City");
+    const nightcallGroup = view?.groups.find((group) => group.media.title === "Nightcall");
+    await RoomService.submitVote(host.roomCode, host.player.playerId, {
+      likedGroupId: midnightGroup!.groupId,
+      dislikedGroupId: nightcallGroup!.groupId,
+    });
+    const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!) as {
+      game: { submissions: Record<string, { likes: number; dislikes: number }> };
+    };
+    expect(persisted.game.submissions[host.player.playerId].likes).toBe(0);
+    expect(persisted.game.submissions[pedro.player.playerId].likes).toBe(1);
+    expect(persisted.game.submissions[ana.player.playerId].likes).toBe(1);
+    expect(persisted.game.submissions[joao.player.playerId].dislikes).toBe(1);
+    await RoomService.submitVote(host.roomCode, pedro.player.playerId, {
+      likedGroupId: nightcallGroup!.groupId,
+      dislikedGroupId: midnightGroup!.groupId,
+    });
+    const afterDislike = JSON.parse(redisStore.get(`room:${host.roomCode}`)!) as {
+      game: { submissions: Record<string, { dislikes: number }> };
+    };
+    expect(afterDislike.game.submissions[host.player.playerId].dislikes).toBe(1);
+    expect(afterDislike.game.submissions[pedro.player.playerId].dislikes).toBe(0);
+    expect(afterDislike.game.submissions[ana.player.playerId].dislikes).toBe(1);
+    const state = await RoomService.getVotingView(host.roomCode, host.player.playerId);
+    expect(state?.hasVoted).toBe(true);
+    await expect(RoomService.submitVote(host.roomCode, host.player.playerId, {
+      likedGroupId: midnightGroup!.groupId,
+      dislikedGroupId: nightcallGroup!.groupId,
+    })).rejects.toMatchObject({ code: "ALREADY_VOTED" });
+  });
+
+  it("keeps a unique own submission out of that player's voting options", async () => {
+    const host = await RoomService.createRoom("TV", false);
+    const luiz = await RoomService.joinRoom(host.roomCode, "Luiz");
+    const ana = await RoomService.joinRoom(host.roomCode, "Ana");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    await RoomService.submitChoice(host.roomCode, luiz.player.playerId, { source: "SPOTIFY", title: "Midnight City", spotifyTrackId: "midnight" });
+    await RoomService.submitChoice(host.roomCode, ana.player.playerId, { source: "SPOTIFY", title: "Nightcall", spotifyTrackId: "nightcall" });
+    await RoomService.startListening(host.roomCode, host.player.playerId);
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
+    await RoomService.startVoting(host.roomCode, host.player.playerId);
+
+    const luizView = await RoomService.getVotingView(host.roomCode, luiz.player.playerId);
+    expect(luizView?.groups.map((group) => group.media.title)).toEqual(["Nightcall"]);
+    const hostView = await RoomService.getVotingView(host.roomCode, host.player.playerId);
+    expect(hostView).toMatchObject({ canVote: false, ownSubmission: null });
+  });
+
+  it("preserves listening and voting state for reconnects", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    const player = await RoomService.joinRoom(host.roomCode, "Player");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    const roomWithMoment = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    roomWithMoment.game.currentTheme.type = "MOMENT";
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(roomWithMoment));
+    await RoomService.startRound(host.roomCode, host.player.playerId);
+    await RoomService.submitChoice(host.roomCode, host.player.playerId, { source: "YOUTUBE", title: "Moment", youtubeVideoId: "abc123", startTime: 184 });
+    await RoomService.submitChoice(host.roomCode, player.player.playerId, { source: "YOUTUBE", title: "Outro", youtubeVideoId: "def456", startTime: 0 });
+    const before = await RoomService.startListening(host.roomCode, host.player.playerId);
+    const restored = await RoomService.getListeningState(host.roomCode);
+    expect(restored).toEqual(before);
   });
 });

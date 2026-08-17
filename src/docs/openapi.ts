@@ -296,7 +296,7 @@ export const openApiDocument = {
         properties: {
           round: { type: "integer", minimum: 1, example: 1 },
           totalRounds: { type: "integer", minimum: 1, example: 10 },
-          phase: { type: "string", enum: ["THEME_SELECTION", "PLAYING"] },
+          phase: { type: "string", enum: ["THEME_SELECTION", "CHOOSING", "LISTENING", "VOTING"] },
           currentTheme: { $ref: "#/components/schemas/GameTheme" },
           likes: { type: "integer", minimum: 0 },
           dislikes: { type: "integer", minimum: 0 },
