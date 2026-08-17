@@ -6,7 +6,6 @@ const CATEGORY_PRESENTATION: Record<string, { label: string; description: string
   CHAOS: { label: "Caos", description: "Escolhas intensas, imprevisíveis e fora do comum." },
   CINEMA: { label: "Cinema", description: "Momentos musicais ligados ao cinema." },
   HOT_TAKE: { label: "Hot Takes", description: "Opiniões musicais que rendem discussão." },
-  HOT_TAKES: { label: "Hot Takes", description: "Opiniões musicais que rendem discussão." },
   NOSTALGIA: { label: "Nostalgia", description: "Músicas que transportam para outras épocas." },
   LIVE: { label: "Ao vivo", description: "Performances e gravações que funcionam melhor ao vivo." },
   ARTIST: { label: "Artistas", description: "Temas dedicados a artistas e suas discografias." },
@@ -22,9 +21,20 @@ const CATEGORY_PRESENTATION: Record<string, { label: string; description: string
   MUSIC_VIDEOS: { label: "Videoclipes", description: "Clipes e momentos visuais inesquecíveis." },
 };
 
+export const CATEGORY_ORDER = Object.keys(CATEGORY_PRESENTATION);
+
+export function canonicalCategoryId(id: string): string {
+  return id === "HOT_TAKES" ? "HOT_TAKE" : id;
+}
+
+export function categoryStorageIds(id: string): string[] {
+  return canonicalCategoryId(id) === "HOT_TAKE" ? ["HOT_TAKE", "HOT_TAKES"] : [canonicalCategoryId(id)];
+}
+
 export function categoryPresentation(id: string) {
-  return CATEGORY_PRESENTATION[id] || {
-    label: id.toLowerCase().split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "),
+  const canonicalId = canonicalCategoryId(id);
+  return CATEGORY_PRESENTATION[canonicalId] || {
+    label: canonicalId.toLowerCase().split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "),
     description: "Temas musicais desta categoria.",
   };
 }

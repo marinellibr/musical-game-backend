@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { GameCategory, GameTheme } from "../game/gameTypes";
-import { categoryPresentation } from "../game/categoryMetadata";
+import { CATEGORY_ORDER, canonicalCategoryId, categoryPresentation, categoryStorageIds } from "../game/categoryMetadata";
 
 interface ThemeDocument {
   _id: unknown;
@@ -36,20 +36,31 @@ export default class MongoThemeRepository {
       { $sort: { _id: 1 } },
       { $group: { _id: "$category", examples: { $push: { id: "$_id", title: "$title" } } } },
       { $sort: { _id: 1 } },
-      { $project: { _id: 1, examples: { $slice: ["$examples", 3] } } },
+      { $project: { _id: 1, examples: { $slice: ["$examples", 1] } } },
     ]);
-    const value = rows.map((row) => ({
-      id: row._id,
-      ...categoryPresentation(row._id),
-      examples: row.examples.map((example) => ({ id: String(example.id), title: example.title })),
-    }));
+    const grouped = new Map<string, GameCategory>();
+    for (const row of rows) {
+      const id = canonicalCategoryId(row._id);
+      const current = grouped.get(id);
+      grouped.set(id, {
+        id,
+        ...categoryPresentation(id),
+        examples: current?.examples.length ? current.examples : row.examples.slice(0, 1).map((example) => ({ id: String(example.id), title: example.title })),
+      });
+    }
+    const order = new Map(CATEGORY_ORDER.map((id, index) => [id, index]));
+    const value = [...grouped.values()].sort((left, right) =>
+      (order.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+      || left.label.localeCompare(right.label, "pt-BR"));
     this.categoriesCache = { expiresAt: Date.now() + 5 * 60_000, value };
     return value;
   }
 
   async balancedPool(categories: string[], size: number, excludedIds: string[] = []): Promise<GameTheme[]> {
+    const canonicalCategories = [...new Set(categories.map(canonicalCategoryId))];
+    const storageCategories = [...new Set(canonicalCategories.flatMap(categoryStorageIds))];
     const documents = await ThemeModel.find({
-      category: { $in: categories },
+      category: { $in: storageCategories },
       ...(excludedIds.length > 0 ? { _id: { $nin: excludedIds } } : {}),
       title: { $type: "string" },
       type: { $type: "string" },
@@ -57,15 +68,16 @@ export default class MongoThemeRepository {
     const groups = new Map<string, ThemeDocument[]>();
     for (const document of documents) {
       if (!document.category) continue;
-      const group = groups.get(document.category) || [];
+      const category = canonicalCategoryId(document.category);
+      const group = groups.get(category) || [];
       group.push(document);
-      groups.set(document.category, group);
+      groups.set(category, group);
     }
     const shuffle = <T>(items: T[]) => items
       .map((value) => ({ value, order: Math.random() }))
       .sort((a, b) => a.order - b.order)
       .map(({ value }) => value);
-    const categoryOrder = shuffle(categories.filter((category) => groups.has(category)));
+    const categoryOrder = shuffle(canonicalCategories.filter((category) => groups.has(category)));
     for (const category of categoryOrder) groups.set(category, shuffle(groups.get(category) || []));
     const picked: ThemeDocument[] = [];
     while (picked.length < size) {
