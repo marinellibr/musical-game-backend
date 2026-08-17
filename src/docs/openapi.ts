@@ -305,7 +305,7 @@ export const openApiDocument = {
         properties: {
           round: { type: "integer", minimum: 1, example: 1 },
           totalRounds: { type: "integer", minimum: 1, example: 10 },
-          phase: { type: "string", enum: ["THEME_SELECTION", "CHOOSING", "LISTENING", "VOTING"] },
+          phase: { type: "string", enum: ["THEME_SELECTION", "CHOOSING", "LISTENING", "VOTING", "ROUND_RESULTS"] },
           currentTheme: { $ref: "#/components/schemas/GameTheme" },
           likes: { type: "integer", minimum: 0 },
           dislikes: { type: "integer", minimum: 0 },
@@ -347,7 +347,7 @@ export const openApiDocument = {
         },
       },
       SpotifyTrack: { type: "object", required: ["trackId", "title"], properties: { trackId: { type: "string" }, trackUri: { type: "string" }, title: { type: "string" }, artist: { type: "string" }, album: { type: "string" }, albumId: { type: "string" }, image: { type: "string", format: "uri" } } },
-      LeaderboardEntry: { type: "object", required: ["playerId", "username", "score", "position"], properties: { playerId: { type: "string" }, username: { type: "string" }, score: { type: "number" }, position: { type: "integer", minimum: 1 } } },
+      LeaderboardEntry: { type: "object", required: ["playerId", "username", "totalLikes", "totalDislikes", "voteBalance", "position"], properties: { playerId: { type: "string" }, username: { type: "string" }, totalLikes: { type: "integer", minimum: 0 }, totalDislikes: { type: "integer", minimum: 0 }, voteBalance: { type: "integer" }, position: { type: "integer", minimum: 1 } } },
       YouTubeMetadataResponse: {
         type: "object",
         required: ["videoId"],

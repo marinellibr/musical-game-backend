@@ -3,7 +3,7 @@ export interface RoundScore {
   likes: number;
   dislikes: number;
   balance: number;
-  points: number;
+  position: number;
 }
 
 export function scoreRound(results: RoundScore[]): RoundScore[] {
@@ -17,11 +17,13 @@ export function scoreRound(results: RoundScore[]): RoundScore[] {
     return a.dislikes - b.dislikes;
   });
 
-  // assign points
-  const pointsByPosition = [10, 5, 2];
-  for (let i = 0; i < results.length; i++) {
-    const points = pointsByPosition[i] ?? 0;
-    results[i].points = points;
+  let previous: Pick<RoundScore, "balance" | "likes" | "dislikes"> | null = null;
+  let position = 0;
+  for (let index = 0; index < results.length; index += 1) {
+    const result = results[index];
+    if (!previous || result.balance !== previous.balance || result.likes !== previous.likes || result.dislikes !== previous.dislikes) position = index + 1;
+    result.position = position;
+    previous = result;
   }
 
   return results;

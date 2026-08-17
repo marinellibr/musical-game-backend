@@ -29,6 +29,12 @@ vi.mock("../src/repositories/MongoThemeRepository", () => ({
 vi.mock("../src/integrations/spotify/spotifyClient", () => ({
   getSpotifyAlbumTracks: async () => ({ items: [{ id: "allowed-track" }] }),
 }));
+vi.mock("../src/repositories/MongoSessionRepository", () => ({
+  default: class {
+    async create() { return null; }
+    async update() { return null; }
+  },
+}));
 
 import RoomService from "../src/rooms/RoomService";
 
@@ -176,7 +182,8 @@ describe("room player lifecycle", () => {
     expect(listening.total).toBe(2);
     await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
     await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    await RoomService.startVoting(host.roomCode, host.player.playerId);
+    const votingEndsAt = await RoomService.startVoting(host.roomCode, host.player.playerId);
+    expect(votingEndsAt - Date.now()).toBe(60_000);
 
     const view = await RoomService.getVotingView(host.roomCode, host.player.playerId);
     expect(view?.ownSubmission?.title).toBe("Midnight City");
@@ -210,6 +217,12 @@ describe("room player lifecycle", () => {
       likedGroupId: midnightGroup!.groupId,
       dislikedGroupId: nightcallGroup!.groupId,
     })).rejects.toMatchObject({ code: "ALREADY_VOTED" });
+    vi.advanceTimersByTime(60_000);
+    const result = await RoomService.closeVoting(host.roomCode);
+    expect(result).toMatchObject({ revealStage: "AUTHORS", round: 1 });
+    expect(result?.ranking).toHaveLength(2);
+    expect(await RoomService.closeVoting(host.roomCode)).toEqual(result);
+    expect(await RoomService.getRoundResult(host.roomCode)).toEqual(result);
   });
 
   it("keeps a unique own submission out of that player's voting options", async () => {
@@ -293,28 +306,24 @@ describe("room player lifecycle", () => {
     await expect(RoomService.submitChoice(host.roomCode, player.player.playerId, { source: "SPOTIFY", title: "Blocked", spotifyTrackId: "other-track" })).rejects.toMatchObject({ code: "TRACK_NOT_IN_ALBUM" });
   });
 
-  it("publishes only consolidated prior-round scores and excludes a host-only", async () => {
+  it("publishes the cumulative vote balance with ties and excludes a host-only", async () => {
     const host = await RoomService.createRoom("TV", false);
     const luiz = await RoomService.joinRoom(host.roomCode, "Luiz");
     const carol = await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     await RoomService.startRound(host.roomCode, host.player.playerId);
     const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
-    persisted.status = "ROUND_RESULTS";
+    persisted.game.cumulativeVotes = {
+      [host.player.playerId]: { totalLikes: 100, totalDislikes: 0 },
+      [luiz.player.playerId]: { totalLikes: 12, totalDislikes: 2 },
+      [carol.player.playerId]: { totalLikes: 11, totalDislikes: 1 },
+    };
     redisStore.set(`room:${host.roomCode}`, JSON.stringify(persisted));
 
-    const scored = await RoomService.consolidateRoundScores(host.roomCode, {
-      [host.player.playerId]: 100,
-      [luiz.player.playerId]: 10,
-      [carol.player.playerId]: 10,
-    });
-    expect(scored.game?.leaderboard).toEqual([
-      { playerId: carol.player.playerId, username: "Carol", score: 10, position: 1 },
-      { playerId: luiz.player.playerId, username: "Luiz", score: 10, position: 1 },
+    const state = await RoomService.getPublicRoomState(host.roomCode);
+    expect(state.game?.leaderboard).toEqual([
+      { playerId: luiz.player.playerId, username: "Luiz", totalLikes: 12, totalDislikes: 2, voteBalance: 10, position: 1 },
+      { playerId: carol.player.playerId, username: "Carol", totalLikes: 11, totalDislikes: 1, voteBalance: 10, position: 2 },
     ]);
-    const repeated = await RoomService.consolidateRoundScores(host.roomCode, {
-      [luiz.player.playerId]: 10,
-    });
-    expect(repeated.game?.leaderboard.find((entry) => entry.playerId === luiz.player.playerId)?.score).toBe(10);
   });
 });

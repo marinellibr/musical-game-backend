@@ -24,6 +24,7 @@ export const TOTAL_ROUNDS = 10;
 export const THEME_POOL_SIZE = 20;
 export const CHOOSING_DURATION_MS = 3 * 60 * 1000;
 export const CHOOSING_RECONNECT_GRACE_MS = 30 * 1000;
+export const VOTING_DURATION_MS = 60 * 1000;
 
 export type ThemeReaction = "like" | "dislike";
 export type MediaSource = "SPOTIFY" | "YOUTUBE";
@@ -41,7 +42,7 @@ export interface GameTheme {
 export interface InternalGameState {
   round: number;
   totalRounds: number;
-  phase: "THEME_SELECTION" | "CHOOSING" | "LISTENING" | "VOTING";
+  phase: "THEME_SELECTION" | "CHOOSING" | "LISTENING" | "VOTING" | "ROUND_RESULTS";
   themePool: GameTheme[];
   themePoolIndex: number;
   playedThemeIds: string[];
@@ -56,8 +57,12 @@ export interface InternalGameState {
   roundStartedAt: number | null;
   roundEndsAt: number | null;
   roundParticipantIds: string[];
-  consolidatedScores: Record<string, number>;
-  lastScoredRound: number;
+  cumulativeVotes: Record<string, { totalLikes: number; totalDislikes: number }>;
+  lastConsolidatedRound: number;
+  votingStartedAt: number | null;
+  votingEndsAt: number | null;
+  roundResult: RoundResultView | null;
+  resultRevealStage: ResultRevealStage;
 }
 
 export interface PublicGameState {
@@ -79,7 +84,9 @@ export interface PublicGameState {
 export interface LeaderboardEntry {
   playerId: string;
   username: string;
-  score: number;
+  totalLikes: number;
+  totalDislikes: number;
+  voteBalance: number;
   position: number;
 }
 
@@ -140,9 +147,33 @@ export interface VotingView {
   canVote: boolean;
   votedPlayers: string[];
   eligiblePlayersCount: number;
+  votingStartedAt: number;
+  votingEndsAt: number;
 }
 
 export interface GroupVote {
   likedGroupId: string;
   dislikedGroupId: string;
+}
+
+export type ResultRevealStage = "AUTHORS" | "VOTES" | "RANKING";
+
+export interface RoundRankingEntry {
+  groupId: string;
+  media: PublicMedia;
+  authors: Array<{ playerId: string; username: string }>;
+  likes: number;
+  dislikes: number;
+  voteBalance: number;
+  position: number;
+}
+
+export interface RoundResultView {
+  round: number;
+  totalRounds: number;
+  theme: GameTheme;
+  revealStage: ResultRevealStage;
+  ranking: RoundRankingEntry[];
+  leaderboard: LeaderboardEntry[];
+  isLastRound: boolean;
 }

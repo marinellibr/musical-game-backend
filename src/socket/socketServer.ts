@@ -41,6 +41,14 @@ export function initSocket(httpServer: HttpServer) {
     }));
   };
 
+  const emitRoundResult = async (roomCode: string, force = false) => {
+    const result = await RoomService.closeVoting(roomCode, force);
+    if (!result) return false;
+    io.to(roomCode).emit("round:result", result);
+    io.to(roomCode).emit("room:state", await RoomService.getPublicRoomState(roomCode));
+    return true;
+  };
+
   const connectPlayer = async (socket: Socket, payload: Record<string, unknown>) => {
     if (socket.data.presenceKey) return;
     const authenticated = await authenticateAndJoin(io, socket, payload);
@@ -230,9 +238,16 @@ export function initSocket(httpServer: HttpServer) {
       if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
       try {
         await runRoomAction(roomCode, async () => {
-          await RoomService.startVoting(roomCode, requesterId);
+          const votingEndsAt = await RoomService.startVoting(roomCode, requesterId);
           io.to(roomCode).emit("room:state", await RoomService.getPublicRoomState(roomCode));
           await emitVotingViews(roomCode);
+          const timer = setTimeout(() => {
+            void runRoomAction(roomCode, async () => {
+              try { await emitRoundResult(roomCode, true); }
+              catch (error) { if ((error as { code?: string }).code !== "INVALID_PHASE") log.error({ roomCode }, "failed to close voting phase"); }
+            });
+          }, Math.max(0, votingEndsAt - Date.now()) + 50);
+          timer.unref();
         });
       } catch (error) { socketError(socket, error); }
     });
@@ -242,8 +257,21 @@ export function initSocket(httpServer: HttpServer) {
       if (!roomCode || !playerId || !payload?.likedGroupId || !payload?.dislikedGroupId) return socketError(socket, Object.assign(new Error("Invalid vote"), { code: "INVALID_PAYLOAD" }));
       try {
         await runRoomAction(roomCode, async () => {
-          await RoomService.submitVote(roomCode, playerId, payload);
-          await emitVotingViews(roomCode);
+          const result = await RoomService.submitVote(roomCode, playerId, payload);
+          if (result) {
+            io.to(roomCode).emit("round:result", result);
+            io.to(roomCode).emit("room:state", await RoomService.getPublicRoomState(roomCode));
+          } else await emitVotingViews(roomCode);
+        });
+      } catch (error) { socketError(socket, error); }
+    });
+    socket.on("result:next", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          io.to(roomCode).emit("round:result", await RoomService.advanceResultReveal(roomCode, requesterId));
         });
       } catch (error) { socketError(socket, error); }
     });

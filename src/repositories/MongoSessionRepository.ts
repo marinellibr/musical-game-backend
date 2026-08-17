@@ -1,4 +1,16 @@
 import mongoose from "mongoose";
+import { UpdateQuery } from "mongoose";
+
+export interface GameSessionRecord {
+  sessionId: string;
+  roomCode: string;
+  createdAt: Date;
+  finishedAt?: Date;
+  players: unknown[];
+  rounds: unknown[];
+  finalRanking?: unknown[];
+  summary?: Record<string, unknown>;
+}
 
 const Schema = new mongoose.Schema(
   {
@@ -18,12 +30,12 @@ const Model =
   mongoose.models.GameSession || mongoose.model("GameSession", Schema);
 
 export default class MongoSessionRepository {
-  async create(session: any) {
+  async create(session: GameSessionRecord) {
     const doc = new Model(session);
     return doc.save();
   }
 
-  async update(sessionId: string, patch: any) {
+  async update(sessionId: string, patch: UpdateQuery<GameSessionRecord>) {
     return Model.findOneAndUpdate({ sessionId }, patch, { new: true });
   }
 

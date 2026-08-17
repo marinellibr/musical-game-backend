@@ -70,3 +70,12 @@ Theme-selection Socket.IO events:
 - `voting:start` — host opens voting after all groups were heard
 - `voting:state` — sends an author-free, player-specific voting DTO
 - `vote:submit` — accepts one liked and one disliked group ID
+- `round:result` — broadcasts the persisted result snapshot with authors, votes, ranking, and cumulative leaderboard
+- `result:next` — host advances the shared reveal from authors to votes and ranking
+- `round:next` — host advances to the next theme, or to final results after the last round
+
+Voting lasts 60 seconds using backend-owned `votingStartedAt` and
+`votingEndsAt`. It closes idempotently when every active round participant has
+voted or when the deadline expires. Rankings and the cumulative leaderboard use
+likes minus dislikes, then likes descending and dislikes ascending; exact ties
+share the same position. No separate round points are awarded.

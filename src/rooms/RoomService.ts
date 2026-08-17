@@ -2,6 +2,7 @@ import logger from "pino";
 import RedisRoomRepository from "../repositories/RedisRoomRepository";
 import { generateId } from "../utils/ids";
 import { getSpotifyAlbumTracks } from "../integrations/spotify/spotifyClient";
+import MongoSessionRepository from "../repositories/MongoSessionRepository";
 import { Player, Room, RoomPublicState } from "./roomTypes";
 import { PLAYER_RECONNECT_TTL_MS } from "../config/env";
 import MongoThemeRepository from "../repositories/MongoThemeRepository";
@@ -17,11 +18,15 @@ import {
   VotingView,
   CHOOSING_DURATION_MS,
   CHOOSING_RECONNECT_GRACE_MS,
+  VOTING_DURATION_MS,
+  RoundResultView,
+  ResultRevealStage,
 } from "../game/gameTypes";
 
 const repo = new RedisRoomRepository();
 const log = logger();
 const themeRepo = new MongoThemeRepository();
+const sessionRepo = new MongoSessionRepository();
 
 export const MIN_PLAYERS_TO_START = 2;
 
@@ -247,10 +252,22 @@ export default class RoomService {
       roundStartedAt: null,
       roundEndsAt: null,
       roundParticipantIds: [],
-      consolidatedScores: {},
-      lastScoredRound: 0,
+      cumulativeVotes: {},
+      lastConsolidatedRound: 0,
+      votingStartedAt: null,
+      votingEndsAt: null,
+      roundResult: null,
+      resultRevealStage: "AUTHORS",
     };
+    room.sessionId = room.sessionId || generateId("session");
     room.status = "THEME_REVEAL";
+    await sessionRepo.create({
+      sessionId: room.sessionId,
+      roomCode: normalizedCode,
+      createdAt: new Date(),
+      players: Object.values(room.players).map(publicPlayer),
+      rounds: [],
+    });
     await repo.saveRoom(normalizedCode, room);
     log.info({ roomCode: normalizedCode, requesterId }, "game started");
     return this.toPublicState(room);
@@ -394,20 +411,27 @@ export default class RoomService {
     return Boolean(room?.game?.submissions[playerId]);
   }
 
-  static async startVoting(roomCode: string, requesterId: string): Promise<void> {
+  static async startVoting(roomCode: string, requesterId: string): Promise<number> {
     const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
     if (!room.game) throw new Error("Game state missing");
     if (room.game.listeningIndex < room.game.submissionGroups.length) {
       throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
     }
     room.game.phase = "VOTING";
+    room.game.votingStartedAt = Date.now();
+    room.game.votingEndsAt = room.game.votingStartedAt + VOTING_DURATION_MS;
     room.status = "VOTING";
     await repo.saveRoom(room.roomCode, room);
+    return room.game.votingEndsAt;
   }
 
   static async getVotingView(roomCode: string, playerId: string): Promise<VotingView | null> {
     const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
     if (!room?.game || room.status !== "VOTING") return null;
+    if (Date.now() >= (room.game.votingEndsAt || 0)) {
+      await this.closeVoting(roomCode, true);
+      return null;
+    }
     const player = room.players[playerId];
     if (!player) throw roomNotFound();
     const own = room.game.submissions[playerId];
@@ -420,13 +444,19 @@ export default class RoomService {
       canVote: player.isPlaying && room.game.roundParticipantIds.includes(playerId),
       votedPlayers: player.isHost ? Object.keys(room.game.votes) : [],
       eligiblePlayersCount: room.game.roundParticipantIds.length,
+      votingStartedAt: room.game.votingStartedAt || Date.now(),
+      votingEndsAt: room.game.votingEndsAt || Date.now(),
     };
   }
 
-  static async submitVote(roomCode: string, playerId: string, vote: GroupVote): Promise<void> {
+  static async submitVote(roomCode: string, playerId: string, vote: GroupVote): Promise<RoundResultView | null> {
     const normalizedCode = this.normalizeRoomCode(roomCode);
     const room = await this.getRoomWithCleanup(normalizedCode);
     if (!room?.game || room.status !== "VOTING") throw Object.assign(new Error("Voting is closed"), { code: "INVALID_PHASE" });
+    if (Date.now() >= (room.game.votingEndsAt || 0)) {
+      await this.closeVoting(normalizedCode, true);
+      throw Object.assign(new Error("Voting time has ended"), { code: "VOTING_CLOSED" });
+    }
     if (!room.players[playerId]?.isPlaying || !room.game.roundParticipantIds.includes(playerId)) throw Object.assign(new Error("Player is not active this round"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
     if (room.game.votes[playerId]) throw Object.assign(new Error("Player already voted"), { code: "ALREADY_VOTED" });
     if (vote.likedGroupId === vote.dislikedGroupId) throw Object.assign(new Error("Votes must target different groups"), { code: "INVALID_VOTE" });
@@ -451,6 +481,50 @@ export default class RoomService {
     applyVote(dislikedSubmissions, "dislikes");
     room.game.votes[playerId] = vote;
     await repo.saveRoom(normalizedCode, room);
+    return this.closeVoting(normalizedCode);
+  }
+
+  static async closeVoting(roomCode: string, force = false): Promise<RoundResultView | null> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room?.game) throw roomNotFound();
+    if (room.status === "ROUND_RESULTS") return room.game.roundResult;
+    if (room.status !== "VOTING") throw Object.assign(new Error("Voting is not active"), { code: "INVALID_PHASE" });
+    const allVoted = room.game.roundParticipantIds.every((id) => Boolean(room.game?.votes[id]));
+    if (!force && !allVoted && Date.now() < (room.game.votingEndsAt || 0)) return null;
+    const ranking = this.buildRoundRanking(room);
+    room.game.cumulativeVotes ||= {};
+    if ((room.game.lastConsolidatedRound || 0) < room.game.round) {
+      for (const submission of Object.values(room.game.submissions)) {
+        const totals = room.game.cumulativeVotes[submission.playerId] || { totalLikes: 0, totalDislikes: 0 };
+        totals.totalLikes += submission.likes;
+        totals.totalDislikes += submission.dislikes;
+        room.game.cumulativeVotes[submission.playerId] = totals;
+      }
+      room.game.lastConsolidatedRound = room.game.round;
+    }
+    room.game.phase = "ROUND_RESULTS";
+    room.game.resultRevealStage = "AUTHORS";
+    room.status = "ROUND_RESULTS";
+    room.game.roundResult = { round: room.game.round, totalRounds: room.game.totalRounds, theme: room.game.currentTheme, revealStage: "AUTHORS", ranking, leaderboard: this.toLeaderboard(room), isLastRound: room.game.round >= room.game.totalRounds };
+    await repo.saveRoom(normalizedCode, room);
+    if (room.sessionId) await sessionRepo.update(room.sessionId, { $push: { rounds: { roundNumber: room.game.round, theme: room.game.currentTheme, ranking, votes: room.game.votes } } });
+    return room.game.roundResult;
+  }
+
+  static async advanceResultReveal(roomCode: string, requesterId: string): Promise<RoundResultView> {
+    const room = await this.requireHostPhase(roomCode, requesterId, "ROUND_RESULTS");
+    if (!room.game?.roundResult) throw new Error("Round result missing");
+    const next: Record<ResultRevealStage, ResultRevealStage> = { AUTHORS: "VOTES", VOTES: "RANKING", RANKING: "RANKING" };
+    room.game.resultRevealStage = next[room.game.resultRevealStage];
+    room.game.roundResult.revealStage = room.game.resultRevealStage;
+    await repo.saveRoom(room.roomCode, room);
+    return room.game.roundResult;
+  }
+
+  static async getRoundResult(roomCode: string): Promise<RoundResultView | null> {
+    const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
+    return room?.status === "ROUND_RESULTS" ? room.game?.roundResult || null : null;
   }
 
   private static validateSubmission(input: SubmissionInput, themeType: string): void {
@@ -530,39 +604,16 @@ export default class RoomService {
     if (!room) throw roomNotFound();
     if (!room.players[requesterId]?.isHost) throw Object.assign(new Error("Host only action"), { code: "FORBIDDEN" });
     if (!room.game || room.status !== "ROUND_RESULTS") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
+    if (room.game.round >= room.game.totalRounds) {
+      room.status = "GAME_RESULTS";
+      await repo.saveRoom(normalizedCode, room);
+      return this.toPublicState(room);
+    }
     const nextTheme = room.game.themePool[room.game.themePoolIndex + 1];
     if (!nextTheme) throw Object.assign(new Error("Theme pool exhausted"), { code: "THEME_POOL_EXHAUSTED" });
     Object.values(room.players).forEach((player) => { if (player.participationStatus === "WAITING_NEXT_ROUND") player.participationStatus = "ACTIVE"; });
-    room.game.round += 1; room.game.themePoolIndex += 1; room.game.currentTheme = nextTheme; room.game.phase = "THEME_SELECTION"; room.game.reactions = {}; room.game.submissions = {}; room.game.submissionGroups = []; room.game.votes = {}; room.game.roundStartedAt = null; room.game.roundEndsAt = null; room.game.roundParticipantIds = [];
+    room.game.round += 1; room.game.themePoolIndex += 1; room.game.currentTheme = nextTheme; room.game.phase = "THEME_SELECTION"; room.game.reactions = {}; room.game.submissions = {}; room.game.submissionGroups = []; room.game.votes = {}; room.game.roundStartedAt = null; room.game.roundEndsAt = null; room.game.roundParticipantIds = []; room.game.votingStartedAt = null; room.game.votingEndsAt = null; room.game.roundResult = null; room.game.resultRevealStage = "AUTHORS";
     room.status = "THEME_REVEAL";
-    await repo.saveRoom(normalizedCode, room);
-    return this.toPublicState(room);
-  }
-
-  static async consolidateRoundScores(
-    roomCode: string,
-    roundScores: Readonly<Record<string, number>>,
-  ): Promise<RoomPublicState> {
-    const normalizedCode = this.normalizeRoomCode(roomCode);
-    const room = await this.getRoomWithCleanup(normalizedCode);
-    if (!room) throw roomNotFound();
-    if (!room.game || room.status !== "ROUND_RESULTS") {
-      throw Object.assign(new Error("Scores can only be consolidated after round results"), { code: "INVALID_PHASE" });
-    }
-    room.game.consolidatedScores ||= {};
-    room.game.lastScoredRound ||= 0;
-    if (room.game.lastScoredRound >= room.game.round) return this.toPublicState(room);
-    for (const playerId of room.game.roundParticipantIds) {
-      const player = room.players[playerId];
-      if (!player?.isPlaying) continue;
-      const points = roundScores[playerId] ?? 0;
-      if (!Number.isFinite(points) || points < 0) {
-        throw Object.assign(new Error("Invalid round score"), { code: "INVALID_SCORE" });
-      }
-      room.game.consolidatedScores[playerId] =
-        (room.game.consolidatedScores[playerId] || 0) + points;
-    }
-    room.game.lastScoredRound = room.game.round;
     await repo.saveRoom(normalizedCode, room);
     return this.toPublicState(room);
   }
@@ -639,16 +690,47 @@ export default class RoomService {
 
   private static toLeaderboard(room: Room) {
     if (!room.game) return [];
-    const entries = Object.entries(room.game.consolidatedScores || {})
-      .map(([playerId, score]) => ({ playerId, score, player: room.players[playerId] }))
+    const entries = Object.entries(room.game.cumulativeVotes || {})
+      .map(([playerId, totals]) => ({ playerId, ...totals, voteBalance: totals.totalLikes - totals.totalDislikes, player: room.players[playerId] }))
       .filter((entry) => entry.player?.isPlaying)
-      .sort((a, b) => b.score - a.score || a.player.username.localeCompare(b.player.username, "pt-BR"));
-    let previousScore: number | null = null;
+      .sort((a, b) => b.voteBalance - a.voteBalance || b.totalLikes - a.totalLikes || a.totalDislikes - b.totalDislikes || a.player.username.localeCompare(b.player.username, "pt-BR"));
+    let previous: { voteBalance: number; totalLikes: number; totalDislikes: number } | null = null;
     let position = 0;
     return entries.map((entry, index) => {
-      if (entry.score !== previousScore) position = index + 1;
-      previousScore = entry.score;
-      return { playerId: entry.playerId, username: entry.player.username, score: entry.score, position };
+      if (!previous || entry.voteBalance !== previous.voteBalance || entry.totalLikes !== previous.totalLikes || entry.totalDislikes !== previous.totalDislikes) position = index + 1;
+      previous = entry;
+      return { playerId: entry.playerId, username: entry.player.username, totalLikes: entry.totalLikes, totalDislikes: entry.totalDislikes, voteBalance: entry.voteBalance, position };
+    });
+  }
+
+  private static buildRoundRanking(room: Room) {
+    if (!room.game) return [];
+    const canonical = Object.values(room.game.submissions);
+    const entries = room.game.submissionGroups.map((group) => {
+      const submissions = group.submissions
+        .map((grouped) => canonical.find((item) => item.submissionId === grouped.submissionId))
+        .filter((submission): submission is Submission => Boolean(submission));
+      const likes = submissions.reduce((total, submission) => total + submission.likes, 0);
+      const dislikes = submissions.reduce((total, submission) => total + submission.dislikes, 0);
+      return {
+        groupId: group.groupId,
+        media: group.publicMedia,
+        authors: submissions.map((submission) => ({
+          playerId: submission.playerId,
+          username: room.players[submission.playerId]?.username || "Jogador",
+        })),
+        likes,
+        dislikes,
+        voteBalance: likes - dislikes,
+        position: 0,
+      };
+    }).sort((a, b) => b.voteBalance - a.voteBalance || b.likes - a.likes || a.dislikes - b.dislikes || a.media.title.localeCompare(b.media.title, "pt-BR"));
+    let previous: { voteBalance: number; likes: number; dislikes: number } | null = null;
+    let position = 0;
+    return entries.map((entry, index) => {
+      if (!previous || entry.voteBalance !== previous.voteBalance || entry.likes !== previous.likes || entry.dislikes !== previous.dislikes) position = index + 1;
+      previous = entry;
+      return { ...entry, position };
     });
   }
 }
