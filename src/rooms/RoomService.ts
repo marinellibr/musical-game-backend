@@ -9,14 +9,18 @@ import MongoThemeRepository from "../repositories/MongoThemeRepository";
 import {
   THEME_POOL_SIZE,
   ThemeReaction,
-  TOTAL_ROUNDS,
+  GameSettings,
+  TotalRounds,
+  ChoosingDurationSeconds,
+  DEFAULT_GAME_SETTINGS,
+  VALID_TOTAL_ROUNDS,
+  VALID_CHOOSING_DURATIONS,
   GroupVote,
   PublicListeningState,
   Submission,
   SubmissionGroup,
   SubmissionInput,
   VotingView,
-  CHOOSING_DURATION_MS,
   CHOOSING_RECONNECT_GRACE_MS,
   VOTING_DURATION_MS,
   RoundResultView,
@@ -202,6 +206,68 @@ export default class RoomService {
     return this.toPublicState(room);
   }
 
+  static async updateSettings(
+    roomCode: string,
+    requesterId: string,
+    settings: GameSettings,
+  ): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (!room.players[requesterId]?.isHost) {
+      throw Object.assign(new Error("Only the host can update settings"), { code: "FORBIDDEN" });
+    }
+    if (room.status !== "LOBBY") {
+      throw Object.assign(new Error("Settings can only be changed in the lobby"), { code: "INVALID_PHASE" });
+    }
+    if (
+      !VALID_TOTAL_ROUNDS.includes(settings.totalRounds) ||
+      !VALID_CHOOSING_DURATIONS.includes(settings.choosingDurationSeconds)
+    ) {
+      throw Object.assign(new Error("Invalid game settings"), { code: "INVALID_PAYLOAD" });
+    }
+    room.settings = { ...settings };
+    await repo.saveRoom(normalizedCode, room);
+    if (room.sessionId) {
+      await sessionRepo.update(room.sessionId, { $set: { settings: { ...settings } } });
+    }
+    return this.toPublicState(room);
+  }
+
+  static async restartGame(roomCode: string, requesterId: string): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (!room.players[requesterId]?.isHost) {
+      throw Object.assign(new Error("Only the host can restart the game"), { code: "FORBIDDEN" });
+    }
+    if (room.status !== "GAME_RESULTS" || !room.sessionId) {
+      throw Object.assign(new Error("The finished game cannot be restarted"), { code: "INVALID_PHASE" });
+    }
+    const previousSessionId = room.sessionId;
+    const settings = { ...(room.settings || DEFAULT_GAME_SETTINGS) };
+    await sessionRepo.update(previousSessionId, {
+      $set: { status: "FINISHED", finishedAt: new Date(), finalRanking: this.toLeaderboard(room) },
+    });
+    room.sessionId = generateId("session");
+    room.status = "LOBBY";
+    room.game = null;
+    room.settings = settings;
+    Object.values(room.players).forEach((player) => { player.participationStatus = "ACTIVE"; });
+    await sessionRepo.create({
+      sessionId: room.sessionId,
+      roomCode: normalizedCode,
+      createdAt: new Date(),
+      status: "LOBBY",
+      settings: { ...settings },
+      players: Object.values(room.players).map(publicPlayer),
+      rounds: [],
+    });
+    await repo.saveRoom(normalizedCode, room);
+    log.info({ roomCode: normalizedCode, previousSessionId, sessionId: room.sessionId }, "game restarted");
+    return this.toPublicState(room);
+  }
+
   static async startGame(
     roomCode: string,
     requesterId: string,
@@ -228,15 +294,16 @@ export default class RoomService {
         code: "GAME_ALREADY_STARTED",
       });
     }
+    room.settings ||= { ...DEFAULT_GAME_SETTINGS };
     const themePool = await themeRepo.randomPool(THEME_POOL_SIZE);
-    if (themePool.length < TOTAL_ROUNDS) {
+    if (themePool.length < room.settings.totalRounds) {
       throw Object.assign(new Error("Not enough eligible themes"), {
         code: "NOT_ENOUGH_THEMES",
       });
     }
     room.game = {
       round: 1,
-      totalRounds: TOTAL_ROUNDS,
+      totalRounds: room.settings.totalRounds,
       phase: "THEME_SELECTION",
       themePool,
       themePoolIndex: 0,
@@ -259,15 +326,24 @@ export default class RoomService {
       roundResult: null,
       resultRevealStage: "AUTHORS",
     };
-    room.sessionId = room.sessionId || generateId("session");
+    const isNewSession = !room.sessionId;
+    room.sessionId ||= generateId("session");
     room.status = "THEME_REVEAL";
-    await sessionRepo.create({
-      sessionId: room.sessionId,
-      roomCode: normalizedCode,
-      createdAt: new Date(),
-      players: Object.values(room.players).map(publicPlayer),
-      rounds: [],
-    });
+    if (isNewSession) {
+      await sessionRepo.create({
+        sessionId: room.sessionId,
+        roomCode: normalizedCode,
+        createdAt: new Date(),
+        status: "ACTIVE",
+        settings: { ...room.settings },
+        players: Object.values(room.players).map(publicPlayer),
+        rounds: [],
+      });
+    } else {
+      await sessionRepo.update(room.sessionId, {
+        $set: { status: "ACTIVE", settings: { ...room.settings }, players: Object.values(room.players).map(publicPlayer) },
+      });
+    }
     await repo.saveRoom(normalizedCode, room);
     log.info({ roomCode: normalizedCode, requesterId }, "game started");
     return this.toPublicState(room);
@@ -336,7 +412,7 @@ export default class RoomService {
     room.game.playedThemeIds.push(room.game.currentTheme.id);
     room.game.phase = "CHOOSING";
     room.game.roundStartedAt = Date.now();
-    room.game.roundEndsAt = room.game.roundStartedAt + CHOOSING_DURATION_MS;
+    room.game.roundEndsAt = room.game.roundStartedAt + room.settings.choosingDurationSeconds * 1000;
     room.game.roundParticipantIds = Object.values(room.players)
       .filter((player) => player.isPlaying && (player.participationStatus || "ACTIVE") === "ACTIVE")
       .map((player) => player.playerId);
@@ -607,6 +683,11 @@ export default class RoomService {
     if (!room.game || room.status !== "ROUND_RESULTS") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
     if (room.game.round >= room.game.totalRounds) {
       room.status = "GAME_RESULTS";
+      if (room.sessionId) {
+        await sessionRepo.update(room.sessionId, {
+          $set: { status: "FINISHED", finishedAt: new Date(), finalRanking: this.toLeaderboard(room) },
+        });
+      }
       await repo.saveRoom(normalizedCode, room);
       return this.toPublicState(room);
     }
@@ -629,6 +710,7 @@ export default class RoomService {
   private static async getRoomWithCleanup(roomCode: string): Promise<Room | null> {
     const room = await repo.getRoom(roomCode);
     if (!room) return null;
+    room.settings ||= { ...DEFAULT_GAME_SETTINGS };
     const now = Date.now();
     const expired = Object.values(room.players).filter(
       (player) =>
@@ -662,6 +744,7 @@ export default class RoomService {
       players: Object.values(room.players)
         .filter((player) => !player.isHost)
         .map(publicPlayer),
+      settings: { ...(room.settings || DEFAULT_GAME_SETTINGS) },
       game: room.game
         ? {
             round: room.game.round,

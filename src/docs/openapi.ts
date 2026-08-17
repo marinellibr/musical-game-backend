@@ -6,6 +6,15 @@ export const openApiDocument = {
     description:
       "API HTTP do Musical Game. A sincronização em tempo real da sala é feita por Socket.IO.",
   },
+  "x-socket-events": {
+    "game:settings:update": {
+      description: "Host atualiza os presets da partida enquanto a sala está no lobby.",
+      payload: { $ref: "#/components/schemas/GameSettings" },
+    },
+    "game:restart": {
+      description: "Host cria uma nova sessão na mesma room após GAME_RESULTS.",
+    },
+  },
   servers: [
     { url: "http://localhost:3000", description: "Desenvolvimento local" },
     {
@@ -261,7 +270,7 @@ export const openApiDocument = {
       },
       RoomState: {
         type: "object",
-        required: ["roomCode", "status", "host", "players"],
+        required: ["roomCode", "status", "host", "players", "settings"],
         properties: {
           roomCode: { type: "string", example: "R78X" },
           status: {
@@ -282,6 +291,7 @@ export const openApiDocument = {
             type: "array",
             items: { $ref: "#/components/schemas/PublicPlayer" },
           },
+          settings: { $ref: "#/components/schemas/GameSettings" },
           game: {
             nullable: true,
             allOf: [{ $ref: "#/components/schemas/PublicGameState" }],
@@ -297,6 +307,14 @@ export const openApiDocument = {
           type: { type: "string", example: "MOMENT" },
           category: { type: "string", example: "INSTRUMENTS" },
           example: { type: "string" },
+        },
+      },
+      GameSettings: {
+        type: "object",
+        required: ["totalRounds", "choosingDurationSeconds"],
+        properties: {
+          totalRounds: { type: "integer", enum: [3, 5, 10], default: 10 },
+          choosingDurationSeconds: { type: "integer", enum: [180, 360, 540], default: 180 },
         },
       },
       PublicGameState: {

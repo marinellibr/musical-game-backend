@@ -20,9 +20,19 @@ export interface Theme {
   category?: string;
 }
 
-export const TOTAL_ROUNDS = 10;
+export type TotalRounds = 3 | 5 | 10;
+export type ChoosingDurationSeconds = 180 | 360 | 540;
+export interface GameSettings {
+  totalRounds: TotalRounds;
+  choosingDurationSeconds: ChoosingDurationSeconds;
+}
+export const DEFAULT_GAME_SETTINGS: GameSettings = {
+  totalRounds: 10,
+  choosingDurationSeconds: 180,
+};
+export const VALID_TOTAL_ROUNDS: readonly TotalRounds[] = [3, 5, 10];
+export const VALID_CHOOSING_DURATIONS: readonly ChoosingDurationSeconds[] = [180, 360, 540];
 export const THEME_POOL_SIZE = 20;
-export const CHOOSING_DURATION_MS = 3 * 60 * 1000;
 export const CHOOSING_RECONNECT_GRACE_MS = 30 * 1000;
 export const VOTING_DURATION_MS = 60 * 1000;
 

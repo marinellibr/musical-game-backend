@@ -4,7 +4,7 @@ import { Server, Socket } from "socket.io";
 import { corsOrigins, PLAYER_RECONNECT_TTL_MS } from "../config/env";
 import RoomService from "../rooms/RoomService";
 import { authenticateAndJoin } from "./roomHandlers";
-import { ThemeReaction } from "../game/gameTypes";
+import { GameSettings, ThemeReaction } from "../game/gameTypes";
 import { GroupVote, SubmissionInput } from "../game/gameTypes";
 
 const log = logger();
@@ -123,6 +123,26 @@ export function initSocket(httpServer: HttpServer) {
       } catch (error) {
         socketError(socket, error);
       }
+    });
+    socket.on("game:settings:update", async (payload: GameSettings) => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId || !payload) return socketError(socket, Object.assign(new Error("Invalid settings"), { code: "INVALID_PAYLOAD" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          io.to(roomCode).emit("room:state", await RoomService.updateSettings(roomCode, requesterId, payload));
+        });
+      } catch (error) { socketError(socket, error); }
+    });
+    socket.on("game:restart", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          io.to(roomCode).emit("room:state", await RoomService.restartGame(roomCode, requesterId));
+        });
+      } catch (error) { socketError(socket, error); }
     });
     socket.on("theme:react", async (payload: { reaction?: ThemeReaction | null }) => {
       const roomCode = socket.data.roomCode as string | undefined;

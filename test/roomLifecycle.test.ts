@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const redisStore = vi.hoisted(() => new Map<string, string>());
+const mongoCreates = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+const mongoUpdates = vi.hoisted(() => [] as Array<{ sessionId: string; patch: Record<string, unknown> }>);
 const fakeRedis = vi.hoisted(() => ({
   async exists(key: string) {
     return redisStore.has(key) ? 1 : 0;
@@ -31,8 +33,8 @@ vi.mock("../src/integrations/spotify/spotifyClient", () => ({
 }));
 vi.mock("../src/repositories/MongoSessionRepository", () => ({
   default: class {
-    async create() { return null; }
-    async update() { return null; }
+    async create(session: Record<string, unknown>) { mongoCreates.push(session); return null; }
+    async update(sessionId: string, patch: Record<string, unknown>) { mongoUpdates.push({ sessionId, patch }); return null; }
   },
 }));
 
@@ -41,6 +43,8 @@ import RoomService from "../src/rooms/RoomService";
 describe("room player lifecycle", () => {
   beforeEach(() => {
     redisStore.clear();
+    mongoCreates.length = 0;
+    mongoUpdates.length = 0;
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-17T00:00:00Z"));
   });
@@ -121,6 +125,61 @@ describe("room player lifecycle", () => {
     const state = await RoomService.startGame(host.roomCode, host.player.playerId);
 
     expect(state.status).toBe("THEME_REVEAL");
+  });
+
+  it("uses typed lobby settings and blocks non-host updates", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    const player = await RoomService.joinRoom(host.roomCode, "Bruno");
+    expect((await RoomService.getPublicRoomState(host.roomCode)).settings).toEqual({ totalRounds: 10, choosingDurationSeconds: 180 });
+
+    await expect(RoomService.updateSettings(host.roomCode, player.player.playerId, { totalRounds: 5, choosingDurationSeconds: 360 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const updated = await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 5, choosingDurationSeconds: 360 });
+    expect(updated.settings).toEqual({ totalRounds: 5, choosingDurationSeconds: 360 });
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    const choosing = await RoomService.startRound(host.roomCode, host.player.playerId);
+    expect(choosing.game?.totalRounds).toBe(5);
+    expect((choosing.game?.roundEndsAt || 0) - (choosing.game?.roundStartedAt || 0)).toBe(360_000);
+    expect(mongoCreates[0]).toMatchObject({ status: "ACTIVE", settings: { totalRounds: 5, choosingDurationSeconds: 360 } });
+  });
+
+  it("restarts into the same room with a new session and inherited settings", async () => {
+    const host = await RoomService.createRoom("TV", false);
+    const player = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
+    await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 540 });
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    const before = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    const previousSessionId = before.sessionId as string;
+    before.status = "GAME_RESULTS";
+    before.players[player.player.playerId].participationStatus = "WAITING_NEXT_ROUND";
+    before.game.cumulativeVotes[player.player.playerId] = { totalLikes: 4, totalDislikes: 1 };
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(before));
+
+    const restarted = await RoomService.restartGame(host.roomCode, host.player.playerId);
+    const after = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    expect(restarted).toMatchObject({ roomCode: host.roomCode, status: "LOBBY", game: null, settings: { totalRounds: 3, choosingDurationSeconds: 540 } });
+    expect(after.sessionId).not.toBe(previousSessionId);
+    expect(after.players[player.player.playerId]).toMatchObject({ playerId: player.player.playerId, playerToken: player.playerToken, participationStatus: "ACTIVE" });
+    expect(mongoUpdates.some((item) => item.sessionId === previousSessionId)).toBe(true);
+    expect(mongoCreates.at(-1)).toMatchObject({ roomCode: host.roomCode, status: "LOBBY", settings: { totalRounds: 3, choosingDurationSeconds: 540 }, rounds: [] });
+    const edited = await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 10, choosingDurationSeconds: 180 });
+    expect(edited.settings).toEqual({ totalRounds: 10, choosingDurationSeconds: 180 });
+    await expect(RoomService.restartGame(host.roomCode, host.player.playerId)).rejects.toMatchObject({ code: "INVALID_PHASE" });
+  });
+
+  it("ends the game at the configured final round", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 180 });
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    const stored = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    stored.status = "ROUND_RESULTS";
+    stored.game.round = 3;
+    stored.game.totalRounds = 3;
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(stored));
+    const finished = await RoomService.prepareNextRound(host.roomCode, host.player.playerId);
+    expect(finished.status).toBe("GAME_RESULTS");
+    expect(mongoUpdates.at(-1)?.patch).toMatchObject({ $set: { status: "FINISHED" } });
   });
 
   it("does not start the game with fewer than two playing participants", async () => {

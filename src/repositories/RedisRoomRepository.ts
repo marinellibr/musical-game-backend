@@ -2,6 +2,7 @@ import { getRedis } from "../config/redis";
 import { env } from "../config/env";
 import { Player, Room } from "../rooms/roomTypes";
 import { generateRoomCode } from "../utils/roomCode";
+import { DEFAULT_GAME_SETTINGS } from "../game/gameTypes";
 
 const PREFIX = "room:";
 const SESSION_PREFIX = "room-session:";
@@ -22,6 +23,7 @@ export default class RedisRoomRepository {
           host: hostPlayer.playerId,
           status: "LOBBY",
           sessionId: null,
+          settings: { ...DEFAULT_GAME_SETTINGS },
           createdAt: Date.now(),
           game: null,
         };
