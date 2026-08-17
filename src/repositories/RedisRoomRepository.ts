@@ -1,21 +1,19 @@
 import { getRedis } from "../config/redis";
-import { generateId } from "../utils/ids";
-import { generateRoomCode } from "../utils/roomCode";
 import { env } from "../config/env";
+import { Player, Room } from "../rooms/roomTypes";
+import { generateRoomCode } from "../utils/roomCode";
 
 const PREFIX = "room:";
 
 export default class RedisRoomRepository {
-  redis = getRedis();
+  private readonly redis = getRedis();
 
-  async createRoom(hostPlayer: any) {
-    // ensure unique code
-    for (let i = 0; i < 5; i++) {
+  async createRoom(hostPlayer: Player): Promise<Room> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = generateRoomCode(4).toUpperCase();
       const key = PREFIX + code;
-      const exists = await this.redis.exists(key);
-      if (!exists) {
-        const room = {
+      if (!(await this.redis.exists(key))) {
+        const room: Room = {
           roomCode: code,
           players: { [hostPlayer.playerId]: hostPlayer },
           host: hostPlayer.playerId,
@@ -23,27 +21,26 @@ export default class RedisRoomRepository {
           sessionId: null,
           createdAt: Date.now(),
         };
-        await this.redis.set(
-          key,
-          JSON.stringify(room),
-          "EX",
-          env.ROOM_TTL_SECONDS,
-        );
+        await this.redis.set(key, JSON.stringify(room), "EX", env.ROOM_TTL_SECONDS);
         return room;
       }
     }
-    throw new Error("UNABLE_TO_GENERATE_ROOM");
+    throw Object.assign(new Error("Unable to generate a room code"), {
+      code: "UNABLE_TO_GENERATE_ROOM",
+    });
   }
 
-  async getRoom(code: string) {
-    const key = PREFIX + code;
-    const raw = await this.redis.get(key);
-    if (!raw) return null;
-    return JSON.parse(raw);
+  async getRoom(code: string): Promise<Room | null> {
+    const raw = await this.redis.get(PREFIX + code);
+    return raw ? (JSON.parse(raw) as Room) : null;
   }
 
-  async saveRoom(code: string, data: any) {
-    const key = PREFIX + code;
-    await this.redis.set(key, JSON.stringify(data), "EX", env.ROOM_TTL_SECONDS);
+  async saveRoom(code: string, data: Room): Promise<void> {
+    await this.redis.set(
+      PREFIX + code,
+      JSON.stringify(data),
+      "EX",
+      env.ROOM_TTL_SECONDS,
+    );
   }
 }

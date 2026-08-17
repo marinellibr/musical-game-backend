@@ -1,56 +1,116 @@
+import logger from "pino";
 import RedisRoomRepository from "../repositories/RedisRoomRepository";
 import { generateId } from "../utils/ids";
+import { Player, Room, RoomPublicState } from "./roomTypes";
 
 const repo = new RedisRoomRepository();
+const log = logger();
+
+function roomNotFound() {
+  return Object.assign(new Error("Room not found"), { code: "ROOM_NOT_FOUND" });
+}
+
+function publicPlayer(player: Player) {
+  return {
+    playerId: player.playerId,
+    username: player.username,
+    isHost: player.isHost,
+    isPlaying: player.isPlaying,
+    connected: player.connected,
+  };
+}
 
 export default class RoomService {
-  static async createRoom(username: string) {
+  static normalizeRoomCode(roomCode: string) {
+    return roomCode.replace(/\s+/g, "").toUpperCase();
+  }
+
+  static async createRoom(username: string, isPlaying = true) {
     const playerId = generateId("player");
     const playerToken = generateId("token");
-    const hostPlayer = {
+    const hostPlayer: Player = {
       playerId,
-      username,
       playerToken,
+      username: username.trim(),
       isHost: true,
-      connected: true,
+      isPlaying,
+      connected: false,
+      lastSeenAt: Date.now(),
     };
     const room = await repo.createRoom(hostPlayer);
-    return { roomCode: room.roomCode, playerId, playerToken, isHost: true };
+    log.info({ roomCode: room.roomCode, playerId }, "room created");
+    return { roomCode: room.roomCode, player: publicPlayer(hostPlayer), playerToken };
   }
 
   static async joinRoom(roomCode: string, username: string) {
-    const room = await repo.getRoom(roomCode);
-    if (!room)
-      throw Object.assign(new Error("Room not found"), {
-        code: "ROOM_NOT_FOUND",
-      });
-    // simple capacity limit 20
-    const players = room.players || {};
-    if (Object.keys(players).length >= 20)
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await repo.getRoom(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (Object.keys(room.players).length >= 20) {
       throw Object.assign(new Error("Room full"), { code: "ROOM_FULL" });
+    }
     const playerId = generateId("player");
     const playerToken = generateId("token");
-    const player = {
+    const player: Player = {
       playerId,
-      username,
       playerToken,
+      username: username.trim(),
       isHost: false,
-      connected: true,
+      isPlaying: true,
+      connected: false,
+      lastSeenAt: Date.now(),
     };
-    players[playerId] = player;
-    room.players = players;
-    await repo.saveRoom(room.roomCode, room);
-    return { roomCode: room.roomCode, playerId, playerToken, isHost: false };
+    room.players[playerId] = player;
+    await repo.saveRoom(normalizedCode, room);
+    log.info({ roomCode: normalizedCode, playerId }, "player joined");
+    return { roomCode: normalizedCode, player: publicPlayer(player), playerToken };
   }
 
-  static async getPublicRoomState(roomCode: string) {
-    const room = await repo.getRoom(roomCode);
-    if (!room) throw new Error("ROOM_NOT_FOUND");
-    const players = Object.values(room.players || {}).map((p: any) => ({
-      playerId: p.playerId,
-      username: p.username,
-      submitted: !!p.submission,
-    }));
-    return { roomCode: room.roomCode, players, status: room.status };
+  static async authenticatePlayer(roomCode: string, playerId: string, playerToken: string) {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await repo.getRoom(normalizedCode);
+    if (!room) throw roomNotFound();
+    const player = room.players[playerId];
+    if (!player || player.playerToken !== playerToken) {
+      throw Object.assign(new Error("Invalid player session"), {
+        code: "INVALID_PLAYER_SESSION",
+      });
+    }
+    return { roomCode: normalizedCode, player };
+  }
+
+  static async setPlayerConnected(
+    roomCode: string,
+    playerId: string,
+    connected: boolean,
+  ): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await repo.getRoom(normalizedCode);
+    if (!room) throw roomNotFound();
+    const player = room.players[playerId];
+    if (!player) throw roomNotFound();
+    player.connected = connected;
+    player.lastSeenAt = Date.now();
+    await repo.saveRoom(normalizedCode, room);
+    return this.toPublicState(room);
+  }
+
+  static async getPublicRoomState(roomCode: string): Promise<RoomPublicState> {
+    const room = await repo.getRoom(this.normalizeRoomCode(roomCode));
+    if (!room) throw roomNotFound();
+    return this.toPublicState(room);
+  }
+
+  private static toPublicState(room: Room): RoomPublicState {
+    const host = room.players[room.host];
+    if (!host) throw new Error("Room host not found");
+    return {
+      roomCode: room.roomCode,
+      status: room.status,
+      host: publicPlayer(host),
+      players: Object.values(room.players)
+        .filter((player) => !player.isHost)
+        .map(publicPlayer),
+    };
   }
 }

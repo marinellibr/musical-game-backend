@@ -15,6 +15,16 @@ export const env = {
   ROOM_TTL_SECONDS: Number(process.env.ROOM_TTL_SECONDS || "21600"),
 };
 
+export const corsOrigins = Array.from(
+  new Set(
+    [
+      "http://localhost:4200",
+      "https://marinellibr.github.io",
+      ...env.FRONTEND_ORIGIN.split(",").map((origin) => origin.trim()),
+    ].filter(Boolean),
+  ),
+);
+
 if (!env.REDIS_URL) {
   // we'll allow startup but log when used
 }

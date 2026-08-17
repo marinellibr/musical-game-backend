@@ -8,7 +8,7 @@ import { connectMongo, closeMongo } from "./config/mongo";
 
 const log = logger();
 
-const port = process.env.PORT || 3000;
+const port = Number(process.env.PORT || 3000);
 
 const server = createServer(app);
 
@@ -16,7 +16,7 @@ initSocket(server);
 
 async function start() {
   await connectMongo();
-  server.listen(port, () => {
+  server.listen(port, "0.0.0.0", () => {
     log.info({ port }, "Server started");
   });
 }
