@@ -187,7 +187,10 @@ export function initSocket(httpServer: HttpServer) {
       try {
         await runRoomAction(roomCode, async () => {
           await RoomService.submitChoice(roomCode, playerId, payload);
-          socket.emit("submission:status", { submitted: true });
+          socket.emit("submission:status", {
+            submitted: true,
+            media: await RoomService.getPlayerSubmission(roomCode, playerId),
+          });
           const roomState = await RoomService.getPublicRoomState(roomCode);
           io.to(roomCode).emit("room:state", roomState);
           if (

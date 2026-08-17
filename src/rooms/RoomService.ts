@@ -406,9 +406,10 @@ export default class RoomService {
     return room?.game && room.status === "LISTENING" ? this.toListeningState(room) : null;
   }
 
-  static async hasPlayerSubmitted(roomCode: string, playerId: string): Promise<boolean> {
+  static async getPlayerSubmission(roomCode: string, playerId: string) {
     const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
-    return Boolean(room?.game?.submissions[playerId]);
+    const submission = room?.game?.submissions[playerId];
+    return submission ? this.toPublicMedia(submission) : null;
   }
 
   static async startVoting(roomCode: string, requesterId: string): Promise<number> {

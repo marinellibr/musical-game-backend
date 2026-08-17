@@ -43,8 +43,13 @@ export async function authenticateAndJoin(
       await RoomService.getPublicRoomState(authenticated.roomCode),
     );
   }
-  if (await RoomService.hasPlayerSubmitted(authenticated.roomCode, playerId)) {
-    socket.emit("submission:status", { submitted: true });
-  }
+  const submittedMedia = await RoomService.getPlayerSubmission(
+    authenticated.roomCode,
+    playerId,
+  );
+  socket.emit("submission:status", {
+    submitted: Boolean(submittedMedia),
+    media: submittedMedia,
+  });
   return authenticated;
 }
