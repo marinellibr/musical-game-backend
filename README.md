@@ -54,3 +54,12 @@ HTTP endpoints:
 - `GET /openapi.json` -> OpenAPI specification
 
 Socket.IO events are outside the OpenAPI protocol and remain documented in code.
+
+Theme-selection Socket.IO events:
+
+- `game:start` — host creates the persisted theme pool and opens round 1
+- `theme:react` — player sends `{ reaction: "like" | "dislike" | null }`
+- `theme:reaction` — server returns the player's private active reaction
+- `theme:swap` — host rejects the candidate and consumes the next pooled theme
+- `round:start` — host confirms the candidate and advances everyone to gameplay
+- `room:state` — server broadcasts the typed public room/game state

@@ -27,5 +27,9 @@ export async function authenticateAndJoin(
     true,
   );
   io.to(authenticated.roomCode).emit("room:state", state);
+  socket.emit("theme:reaction", {
+    themeId: state.game?.currentTheme.id,
+    reaction: await RoomService.getPlayerThemeReaction(authenticated.roomCode, playerId),
+  });
   return authenticated;
 }

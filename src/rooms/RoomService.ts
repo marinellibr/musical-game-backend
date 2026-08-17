@@ -3,9 +3,16 @@ import RedisRoomRepository from "../repositories/RedisRoomRepository";
 import { generateId } from "../utils/ids";
 import { Player, Room, RoomPublicState } from "./roomTypes";
 import { PLAYER_RECONNECT_TTL_MS } from "../config/env";
+import MongoThemeRepository from "../repositories/MongoThemeRepository";
+import {
+  THEME_POOL_SIZE,
+  ThemeReaction,
+  TOTAL_ROUNDS,
+} from "../game/gameTypes";
 
 const repo = new RedisRoomRepository();
 const log = logger();
+const themeRepo = new MongoThemeRepository();
 
 export const MIN_PLAYERS_TO_START = 2;
 
@@ -204,10 +211,99 @@ export default class RoomService {
         code: "GAME_ALREADY_STARTED",
       });
     }
+    const themePool = await themeRepo.randomPool(THEME_POOL_SIZE);
+    if (themePool.length < TOTAL_ROUNDS) {
+      throw Object.assign(new Error("Not enough eligible themes"), {
+        code: "NOT_ENOUGH_THEMES",
+      });
+    }
+    room.game = {
+      round: 1,
+      totalRounds: TOTAL_ROUNDS,
+      phase: "THEME_SELECTION",
+      themePool,
+      themePoolIndex: 0,
+      playedThemeIds: [],
+      rejectedThemeIds: [],
+      currentTheme: themePool[0],
+      reactions: {},
+    };
     room.status = "THEME_REVEAL";
     await repo.saveRoom(normalizedCode, room);
     log.info({ roomCode: normalizedCode, requesterId }, "game started");
     return this.toPublicState(room);
+  }
+
+  static async reactToTheme(
+    roomCode: string,
+    playerId: string,
+    reaction: ThemeReaction | null,
+  ): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (!room.players[playerId]) throw roomNotFound();
+    if (!room.game || room.game.phase !== "THEME_SELECTION") {
+      throw Object.assign(new Error("Theme reactions are closed"), { code: "INVALID_PHASE" });
+    }
+    if (reaction) room.game.reactions[playerId] = reaction;
+    else delete room.game.reactions[playerId];
+    await repo.saveRoom(normalizedCode, room);
+    return this.toPublicState(room);
+  }
+
+  static async swapTheme(roomCode: string, requesterId: string): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (!room.players[requesterId]?.isHost) {
+      throw Object.assign(new Error("Only the host can swap themes"), { code: "FORBIDDEN" });
+    }
+    if (!room.game || room.game.phase !== "THEME_SELECTION") {
+      throw Object.assign(new Error("Theme cannot be swapped now"), { code: "INVALID_PHASE" });
+    }
+    let nextIndex = room.game.themePoolIndex + 1;
+    if (!room.game.themePool[nextIndex]) {
+      const seenIds = [
+        ...room.game.playedThemeIds,
+        ...room.game.rejectedThemeIds,
+        room.game.currentTheme.id,
+      ];
+      const extraThemes = await themeRepo.randomPool(THEME_POOL_SIZE, seenIds);
+      if (extraThemes.length === 0) {
+        throw Object.assign(new Error("Theme pool exhausted"), { code: "THEME_POOL_EXHAUSTED" });
+      }
+      room.game.themePool.push(...extraThemes);
+      nextIndex = room.game.themePoolIndex + 1;
+    }
+    room.game.rejectedThemeIds.push(room.game.currentTheme.id);
+    room.game.themePoolIndex = nextIndex;
+    room.game.currentTheme = room.game.themePool[nextIndex];
+    room.game.reactions = {};
+    await repo.saveRoom(normalizedCode, room);
+    return this.toPublicState(room);
+  }
+
+  static async startRound(roomCode: string, requesterId: string): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    if (!room.players[requesterId]?.isHost) {
+      throw Object.assign(new Error("Only the host can start a round"), { code: "FORBIDDEN" });
+    }
+    if (!room.game || room.game.phase !== "THEME_SELECTION") {
+      throw Object.assign(new Error("Round has already started"), { code: "INVALID_PHASE" });
+    }
+    room.game.playedThemeIds.push(room.game.currentTheme.id);
+    room.game.phase = "PLAYING";
+    room.status = "CHOOSING";
+    await repo.saveRoom(normalizedCode, room);
+    return this.toPublicState(room);
+  }
+
+  static async getPlayerThemeReaction(roomCode: string, playerId: string) {
+    const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
+    return room?.game?.reactions[playerId] ?? null;
   }
 
   static async cleanupExpiredPlayers(roomCode: string): Promise<RoomPublicState> {
@@ -253,6 +349,18 @@ export default class RoomService {
       players: Object.values(room.players)
         .filter((player) => !player.isHost)
         .map(publicPlayer),
+      game: room.game
+        ? {
+            round: room.game.round,
+            totalRounds: room.game.totalRounds,
+            phase: room.game.phase,
+            currentTheme: room.game.currentTheme,
+            likes: Object.values(room.game.reactions).filter((value) => value === "like").length,
+            dislikes: Object.values(room.game.reactions).filter((value) => value === "dislike").length,
+            reactedPlayers: Object.keys(room.game.reactions).length,
+            playersCount: Object.values(room.players).filter((player) => player.isPlaying).length,
+          }
+        : null,
     };
   }
 }

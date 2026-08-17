@@ -23,6 +23,7 @@ export default class RedisRoomRepository {
           status: "LOBBY",
           sessionId: null,
           createdAt: Date.now(),
+          game: null,
         };
         await this.redis.set(key, JSON.stringify(room), "EX", env.ROOM_TTL_SECONDS);
         return room;

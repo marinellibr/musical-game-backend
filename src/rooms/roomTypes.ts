@@ -16,6 +16,7 @@ export interface Room {
   status: "LOBBY" | string;
   sessionId: string | null;
   createdAt: number;
+  game: InternalGameState | null;
 }
 
 export interface PublicPlayer {
@@ -31,6 +32,7 @@ export interface RoomPublicState {
   status: string;
   host: PublicPlayer;
   players: PublicPlayer[];
+  game: PublicGameState | null;
 }
 
 export interface PlayerCredentials {
@@ -38,3 +40,4 @@ export interface PlayerCredentials {
   playerId: string;
   playerToken: string;
 }
+import { InternalGameState, PublicGameState } from "../game/gameTypes";

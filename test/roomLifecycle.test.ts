@@ -15,6 +15,17 @@ const fakeRedis = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/config/redis", () => ({ getRedis: () => fakeRedis }));
+vi.mock("../src/repositories/MongoThemeRepository", () => ({
+  default: class {
+    async randomPool() {
+      return Array.from({ length: 20 }, (_, index) => ({
+        id: `theme_${index + 1}`,
+        title: `Tema ${index + 1}`,
+        type: "MUSIC",
+      }));
+    }
+  },
+}));
 
 import RoomService from "../src/rooms/RoomService";
 
@@ -109,5 +120,39 @@ describe("room player lifecycle", () => {
     await expect(
       RoomService.startGame(host.roomCode, host.player.playerId),
     ).rejects.toMatchObject({ code: "NOT_ENOUGH_PLAYERS" });
+  });
+
+  it("records typed reactions and clears them when the host swaps the theme", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    const player = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+
+    const reacted = await RoomService.reactToTheme(
+      host.roomCode,
+      player.player.playerId,
+      "dislike",
+    );
+    expect(reacted.game).toMatchObject({ dislikes: 1, reactedPlayers: 1 });
+    const firstThemeId = reacted.game?.currentTheme.id;
+
+    const swapped = await RoomService.swapTheme(host.roomCode, host.player.playerId);
+    expect(swapped.game).toMatchObject({ dislikes: 0, reactedPlayers: 0, round: 1 });
+    expect(swapped.game?.currentTheme.id).not.toBe(firstThemeId);
+  });
+
+  it("lets only the host start a round and prevents starting it twice", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    const player = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+
+    await expect(
+      RoomService.startRound(host.roomCode, player.player.playerId),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const started = await RoomService.startRound(host.roomCode, host.player.playerId);
+    expect(started).toMatchObject({ status: "CHOOSING", game: { phase: "PLAYING" } });
+    await expect(
+      RoomService.startRound(host.roomCode, host.player.playerId),
+    ).rejects.toMatchObject({ code: "INVALID_PHASE" });
   });
 });

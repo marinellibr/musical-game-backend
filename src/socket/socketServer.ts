@@ -4,6 +4,7 @@ import { Server, Socket } from "socket.io";
 import { corsOrigins, PLAYER_RECONNECT_TTL_MS } from "../config/env";
 import RoomService from "../rooms/RoomService";
 import { authenticateAndJoin } from "./roomHandlers";
+import { ThemeReaction } from "../game/gameTypes";
 
 const log = logger();
 
@@ -18,6 +19,18 @@ function socketError(socket: Socket, error: unknown) {
 export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, { cors: { origin: corsOrigins } });
   const connections = new Map<string, number>();
+  const roomActions = new Map<string, Promise<void>>();
+
+  const runRoomAction = (roomCode: string, action: () => Promise<void>) => {
+    const previous = roomActions.get(roomCode) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(action);
+    roomActions.set(roomCode, current);
+    void current.then(
+      () => { if (roomActions.get(roomCode) === current) roomActions.delete(roomCode); },
+      () => { if (roomActions.get(roomCode) === current) roomActions.delete(roomCode); },
+    );
+    return current;
+  };
 
   const connectPlayer = async (socket: Socket, payload: Record<string, unknown>) => {
     if (socket.data.presenceKey) return;
@@ -86,8 +99,55 @@ export function initSocket(httpServer: HttpServer) {
         return;
       }
       try {
-        const state = await RoomService.startGame(roomCode, requesterId);
-        io.to(roomCode).emit("room:state", state);
+        await runRoomAction(roomCode, async () => {
+          const state = await RoomService.startGame(roomCode, requesterId);
+          io.to(roomCode).emit("room:state", state);
+        });
+      } catch (error) {
+        socketError(socket, error);
+      }
+    });
+    socket.on("theme:react", async (payload: { reaction?: ThemeReaction | null }) => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const playerId = socket.data.playerId as string | undefined;
+      const reaction = payload?.reaction;
+      if (!roomCode || !playerId || (reaction !== "like" && reaction !== "dislike" && reaction !== null)) {
+        socketError(socket, Object.assign(new Error("Invalid reaction"), { code: "INVALID_PAYLOAD" }));
+        return;
+      }
+      try {
+        await runRoomAction(roomCode, async () => {
+          const state = await RoomService.reactToTheme(roomCode, playerId, reaction);
+          io.to(roomCode).emit("room:state", state);
+          socket.emit("theme:reaction", { themeId: state.game?.currentTheme.id, reaction });
+        });
+      } catch (error) {
+        socketError(socket, error);
+      }
+    });
+    socket.on("theme:swap", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          const state = await RoomService.swapTheme(roomCode, requesterId);
+          io.to(roomCode).emit("room:state", state);
+          io.to(roomCode).emit("theme:reaction", { themeId: state.game?.currentTheme.id, reaction: null });
+        });
+      } catch (error) {
+        socketError(socket, error);
+      }
+    });
+    socket.on("round:start", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
+      try {
+        await runRoomAction(roomCode, async () => {
+          const state = await RoomService.startRound(roomCode, requesterId);
+          io.to(roomCode).emit("room:state", state);
+        });
       } catch (error) {
         socketError(socket, error);
       }

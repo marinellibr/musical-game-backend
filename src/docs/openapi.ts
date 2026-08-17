@@ -274,6 +274,34 @@ export const openApiDocument = {
             type: "array",
             items: { $ref: "#/components/schemas/PublicPlayer" },
           },
+          game: {
+            nullable: true,
+            allOf: [{ $ref: "#/components/schemas/PublicGameState" }],
+          },
+        },
+      },
+      GameTheme: {
+        type: "object",
+        required: ["id", "title", "type"],
+        properties: {
+          id: { type: "string", example: "melhor_virada_de_bateria" },
+          title: { type: "string", example: "Melhor virada de bateria" },
+          type: { type: "string", example: "MOMENT" },
+          category: { type: "string", example: "INSTRUMENTS" },
+        },
+      },
+      PublicGameState: {
+        type: "object",
+        required: ["round", "totalRounds", "phase", "currentTheme", "likes", "dislikes", "reactedPlayers", "playersCount"],
+        properties: {
+          round: { type: "integer", minimum: 1, example: 1 },
+          totalRounds: { type: "integer", minimum: 1, example: 10 },
+          phase: { type: "string", enum: ["THEME_SELECTION", "PLAYING"] },
+          currentTheme: { $ref: "#/components/schemas/GameTheme" },
+          likes: { type: "integer", minimum: 0 },
+          dislikes: { type: "integer", minimum: 0 },
+          reactedPlayers: { type: "integer", minimum: 0 },
+          playersCount: { type: "integer", minimum: 0 },
         },
       },
       RoomEntryResponse: {
