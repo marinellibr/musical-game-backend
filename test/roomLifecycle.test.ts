@@ -387,17 +387,10 @@ describe("room player lifecycle", () => {
 
     const initial = await RoomService.startListening(host.roomCode, host.player.playerId);
     expect(initial).toMatchObject({ index: 0, total: 3, finished: false, readyCount: 0, eligibleReadyCount: 2, canStartVoting: false });
+    expect(initial.items).toHaveLength(3);
     expect(initial.current).toMatchObject({ title: expect.any(String), artist: expect.any(String) });
     await expect(RoomService.moveListening(host.roomCode, carol.player.playerId, "next")).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(RoomService.setListeningReady(host.roomCode, carol.player.playerId, true)).rejects.toMatchObject({ code: "LISTENING_NOT_FINISHED" });
-
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "previous");
-    expect((await RoomService.getListeningState(host.roomCode))?.index).toBe(0);
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    const finished = await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    expect(finished).toMatchObject({ index: 2, finished: true, current: { title: expect.any(String) }, canStartVoting: false });
+    await expect(RoomService.moveListening(host.roomCode, host.player.playerId, "next")).rejects.toMatchObject({ code: "LOCAL_LISTENING_NAVIGATION" });
     await expect(RoomService.startVoting(host.roomCode, host.player.playerId)).rejects.toMatchObject({ code: "LISTENING_READY_REQUIRED" });
     await expect(RoomService.setListeningReady(host.roomCode, host.player.playerId, true)).rejects.toMatchObject({ code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
 
@@ -425,9 +418,8 @@ describe("room player lifecycle", () => {
     persisted.players[carol.player.playerId].participationStatus = "WAITING_NEXT_ROUND";
     persisted.players[bruno.player.playerId].participationStatus = "WAITING_NEXT_ROUND";
     redisStore.set(`room:${host.roomCode}`, JSON.stringify(persisted));
-    await RoomService.startListening(host.roomCode, host.player.playerId);
-    const finished = await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
-    expect(finished).toMatchObject({ finished: true, eligibleReadyCount: 0, canStartVoting: true });
+    const listening = await RoomService.startListening(host.roomCode, host.player.playerId);
+    expect(listening).toMatchObject({ finished: false, eligibleReadyCount: 0, canStartVoting: true });
     await expect(RoomService.setListeningReady(host.roomCode, carol.player.playerId, true)).rejects.toMatchObject({ code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
     await expect(RoomService.startVoting(host.roomCode, carol.player.playerId)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(RoomService.startVoting(host.roomCode, host.player.playerId)).resolves.toBe(Date.now() + 60_000);

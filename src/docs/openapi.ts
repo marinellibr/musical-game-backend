@@ -18,10 +18,10 @@ export const openApiDocument = {
       description: "Host cria uma nova sessão na mesma room após GAME_RESULTS.",
     },
     "listening:next / listening:previous": {
-      description: "Host altera o índice authoritative da mídia em LISTENING. Na V2, avançar a última mídia encerra a audição sem iniciar VOTING.",
+      description: "Eventos de navegação authoritative exclusivos da V1. Na V2 cada player navega localmente pela playlist recebida.",
     },
     "listening:ready:set": {
-      description: "Player non-host ACTIVE da rodada V2 marca ou desfaz readiness após o encerramento da audição.",
+      description: "Player non-host ACTIVE da rodada V2 marca ou desfaz readiness a qualquer momento durante LISTENING.",
       payload: { type: "object", required: ["ready"], properties: { ready: { type: "boolean" } } },
     },
     "listening:state": {
@@ -29,7 +29,7 @@ export const openApiDocument = {
       payload: { $ref: "#/components/schemas/PublicListeningState" },
     },
     "voting:start": {
-      description: "Host inicia VOTING. Na V2 exige audição encerrada e ao menos um non-host elegível pronto, exceto quando não existe non-host elegível.",
+      description: "Host inicia VOTING. Na V2 exige ao menos um non-host elegível pronto, exceto quando não existe non-host elegível.",
     },
   },
   servers: [
@@ -359,10 +359,11 @@ export const openApiDocument = {
       },
       PublicListeningState: {
         type: "object",
-        required: ["theme", "index", "total", "current", "finished", "votingEnabled", "readyPlayers", "readyCount", "eligibleReadyCount", "canStartVoting"],
+        required: ["theme", "index", "total", "current", "items", "finished", "votingEnabled", "readyPlayers", "readyCount", "eligibleReadyCount", "canStartVoting"],
         properties: {
           theme: { $ref: "#/components/schemas/GameTheme" }, index: { type: "integer", minimum: 0 }, total: { type: "integer", minimum: 0 },
           current: { nullable: true, $ref: "#/components/schemas/PublicMedia" }, finished: { type: "boolean" }, votingEnabled: { type: "boolean" },
+          items: { type: "array", description: "Playlist completa enviada aos clientes V2 para navegação local independente.", items: { $ref: "#/components/schemas/PublicMedia" } },
           readyPlayers: { type: "array", items: { type: "object", required: ["playerId", "username", "ready"], properties: { playerId: { type: "string" }, username: { type: "string" }, ready: { type: "boolean" } } } },
           readyCount: { type: "integer", minimum: 0 }, eligibleReadyCount: { type: "integer", minimum: 0 }, canStartVoting: { type: "boolean" },
         },

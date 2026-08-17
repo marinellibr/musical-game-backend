@@ -165,6 +165,7 @@ export interface PublicListeningState {
   index: number;
   total: number;
   current: PublicMedia | null;
+  items: PublicMedia[];
   finished: boolean;
   votingEnabled: boolean;
   readyPlayers: Array<{ playerId: string; username: string; ready: boolean }>;

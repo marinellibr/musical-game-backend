@@ -506,21 +506,11 @@ export default class RoomService {
   static async moveListening(roomCode: string, requesterId: string, direction: "next" | "previous") {
     const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
     if (!room.game) throw new Error("Game state missing");
-    if (room.gameVersion === "v2") {
-      const lastIndex = Math.max(0, room.game.submissionGroups.length - 1);
-      if (direction === "next" && room.game.listeningIndex >= lastIndex) room.game.listeningFinished = true;
-      else {
-        room.game.listeningFinished = false;
-        room.game.listeningIndex = direction === "next"
-          ? Math.min(room.game.listeningIndex + 1, lastIndex)
-          : Math.max(room.game.listeningIndex - 1, 0);
-      }
-    } else {
-      const maxIndex = room.game.submissionGroups.length;
-      room.game.listeningIndex = direction === "next"
-        ? Math.min(room.game.listeningIndex + 1, maxIndex)
-        : Math.max(room.game.listeningIndex - 1, 0);
-    }
+    if (room.gameVersion === "v2") throw Object.assign(new Error("V2 listening navigation is local"), { code: "LOCAL_LISTENING_NAVIGATION" });
+    const maxIndex = room.game.submissionGroups.length;
+    room.game.listeningIndex = direction === "next"
+      ? Math.min(room.game.listeningIndex + 1, maxIndex)
+      : Math.max(room.game.listeningIndex - 1, 0);
     await repo.saveRoom(room.roomCode, room);
     return this.toListeningState(room);
   }
@@ -530,7 +520,6 @@ export default class RoomService {
     const room = await this.getRoomWithCleanup(normalizedCode);
     if (!room?.game || room.status !== "LISTENING") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
     if (room.gameVersion !== "v2") throw Object.assign(new Error("Ready is only available in V2"), { code: "INVALID_GAME_VERSION" });
-    if (!room.game.listeningFinished) throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
     const player = room.players[requesterId];
     const eligible = player && !player.isHost && player.isPlaying && player.participationStatus === "ACTIVE" && room.game.roundParticipantIds.includes(requesterId);
     if (!eligible) throw Object.assign(new Error("Player is not eligible for ready"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
@@ -556,7 +545,6 @@ export default class RoomService {
     const room = await this.requireHostPhase(roomCode, requesterId, "LISTENING");
     if (!room.game) throw new Error("Game state missing");
     if (room.gameVersion === "v2") {
-      if (!room.game.listeningFinished) throw Object.assign(new Error("Listening is not finished"), { code: "LISTENING_NOT_FINISHED" });
       const eligibleIds = this.eligibleListeningReadyPlayers(room).map((player) => player.playerId);
       const readyCount = (room.game.listeningReadyPlayerIds || []).filter((id) => eligibleIds.includes(id)).length;
       if (eligibleIds.length > 0 && readyCount < 1) throw Object.assign(new Error("Waiting for a ready player"), { code: "LISTENING_READY_REQUIRED" });
@@ -735,7 +723,8 @@ export default class RoomService {
     })) : [];
     const finished = room.gameVersion === "v2" ? Boolean(room.game.listeningFinished) : room.game.listeningIndex >= room.game.submissionGroups.length;
     const readyCount = readyPlayers.filter((player) => player.ready).length;
-    return { theme: room.game.currentTheme, index: room.game.listeningIndex, total: room.game.submissionGroups.length, current: group?.publicMedia ?? null, finished, votingEnabled: room.game.votingEnabled, readyPlayers, readyCount, eligibleReadyCount: readyPlayers.length, canStartVoting: finished && (readyCount >= 1 || readyPlayers.length === 0) };
+    const items = room.gameVersion === "v2" ? room.game.submissionGroups.map((submissionGroup) => submissionGroup.publicMedia) : [];
+    return { theme: room.game.currentTheme, index: room.game.listeningIndex, total: room.game.submissionGroups.length, current: group?.publicMedia ?? null, items, finished, votingEnabled: room.game.votingEnabled, readyPlayers, readyCount, eligibleReadyCount: readyPlayers.length, canStartVoting: readyCount >= 1 || readyPlayers.length === 0 };
   }
 
   private static eligibleListeningReadyPlayers(room: Room) {
