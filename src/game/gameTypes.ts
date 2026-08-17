@@ -32,6 +32,17 @@ export const DEFAULT_GAME_SETTINGS: GameSettings = {
 };
 export const VALID_TOTAL_ROUNDS: readonly TotalRounds[] = [3, 5, 10];
 export const VALID_CHOOSING_DURATIONS: readonly ChoosingDurationSeconds[] = [180, 360, 540];
+export function normalizeGameSettings(settings?: Partial<GameSettings> | null): GameSettings {
+  const totalRounds = VALID_TOTAL_ROUNDS.includes(settings?.totalRounds as TotalRounds)
+    ? settings!.totalRounds as TotalRounds
+    : DEFAULT_GAME_SETTINGS.totalRounds;
+  const choosingDurationSeconds = VALID_CHOOSING_DURATIONS.includes(
+    settings?.choosingDurationSeconds as ChoosingDurationSeconds,
+  )
+    ? settings!.choosingDurationSeconds as ChoosingDurationSeconds
+    : DEFAULT_GAME_SETTINGS.choosingDurationSeconds;
+  return { totalRounds, choosingDurationSeconds };
+}
 export const THEME_POOL_SIZE = 20;
 export const CHOOSING_RECONNECT_GRACE_MS = 30 * 1000;
 export const VOTING_DURATION_MS = 60 * 1000;

@@ -12,7 +12,7 @@ import {
   GameSettings,
   TotalRounds,
   ChoosingDurationSeconds,
-  DEFAULT_GAME_SETTINGS,
+  normalizeGameSettings,
   VALID_TOTAL_ROUNDS,
   VALID_CHOOSING_DURATIONS,
   GroupVote,
@@ -245,7 +245,7 @@ export default class RoomService {
       throw Object.assign(new Error("The finished game cannot be restarted"), { code: "INVALID_PHASE" });
     }
     const previousSessionId = room.sessionId;
-    const settings = { ...(room.settings || DEFAULT_GAME_SETTINGS) };
+    const settings = normalizeGameSettings(room.settings);
     await sessionRepo.update(previousSessionId, {
       $set: { status: "FINISHED", finishedAt: new Date(), finalRanking: this.toLeaderboard(room) },
     });
@@ -294,7 +294,7 @@ export default class RoomService {
         code: "GAME_ALREADY_STARTED",
       });
     }
-    room.settings ||= { ...DEFAULT_GAME_SETTINGS };
+    room.settings = normalizeGameSettings(room.settings);
     const themePool = await themeRepo.randomPool(THEME_POOL_SIZE);
     if (themePool.length < room.settings.totalRounds) {
       throw Object.assign(new Error("Not enough eligible themes"), {
@@ -710,7 +710,7 @@ export default class RoomService {
   private static async getRoomWithCleanup(roomCode: string): Promise<Room | null> {
     const room = await repo.getRoom(roomCode);
     if (!room) return null;
-    room.settings ||= { ...DEFAULT_GAME_SETTINGS };
+    room.settings = normalizeGameSettings(room.settings);
     const now = Date.now();
     const expired = Object.values(room.players).filter(
       (player) =>
@@ -744,7 +744,7 @@ export default class RoomService {
       players: Object.values(room.players)
         .filter((player) => !player.isHost)
         .map(publicPlayer),
-      settings: { ...(room.settings || DEFAULT_GAME_SETTINGS) },
+      settings: normalizeGameSettings(room.settings),
       game: room.game
         ? {
             round: room.game.round,
