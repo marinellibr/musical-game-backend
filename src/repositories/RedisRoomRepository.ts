@@ -51,6 +51,10 @@ export default class RedisRoomRepository {
     );
   }
 
+  async saveCompletedRoom(code: string, data: Room): Promise<void> {
+    await this.redis.set(PREFIX + code, JSON.stringify(data), "EX", env.FINISHED_ROOM_TTL_SECONDS);
+  }
+
   async markSessionInvalid(
     roomCode: string,
     playerId: string,

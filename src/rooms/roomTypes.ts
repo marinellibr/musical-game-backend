@@ -33,6 +33,7 @@ export interface PublicPlayer {
 
 export interface RoomPublicState {
   roomCode: string;
+  sessionId: string | null;
   status: string;
   gameVersion: GameVersion;
   host: PublicPlayer;

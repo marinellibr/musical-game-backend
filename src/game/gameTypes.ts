@@ -98,6 +98,8 @@ export interface InternalGameState {
   votingEndsAt: number | null;
   roundResult: RoundResultView | null;
   resultRevealStage: ResultRevealStage;
+  historicalRounds: HistoricalRound[];
+  finalAnalysis?: FinalAnalysis;
 }
 
 export interface PublicGameState {
@@ -114,6 +116,7 @@ export interface PublicGameState {
   submittedCount: number;
   waitingNextRoundCount: number;
   leaderboard: LeaderboardEntry[];
+  analysis?: FinalAnalysis;
 }
 
 export interface LeaderboardEntry {
@@ -216,4 +219,71 @@ export interface RoundResultView {
   ranking: RoundRankingEntry[];
   leaderboard: LeaderboardEntry[];
   isLastRound: boolean;
+}
+
+export interface HistoricalRound {
+  roundNumber: number;
+  theme: GameTheme;
+  participants: Array<{ playerId: string; username: string }>;
+  submissions: Array<Submission & { mediaKey: string }>;
+  groups: Array<{ groupId: string; mediaKey: string; submissionIds: string[] }>;
+  votes: Array<{ voterPlayerId: string; likedGroupId: string; dislikedGroupId: string }>;
+}
+
+export interface AnalysisPlayer {
+  playerId: string;
+  username: string;
+}
+
+export interface FinalAnalysisPlayer extends AnalysisPlayer {
+  totalLikesReceived: number;
+  totalDislikesReceived: number;
+  totalLikesGiven: number;
+  totalDislikesGiven: number;
+  roundsPlayed: number;
+  uniqueSameChoicesWithOthers: number;
+  likedByMost: AnalysisPlayer[];
+  dislikedByMost: AnalysisPlayer[];
+}
+
+export interface AnalysisPairHighlight {
+  players: [AnalysisPlayer, AnalysisPlayer];
+  roundsTogether: number;
+  likesBetween: number;
+  dislikesBetween: number;
+  sameChoices: number;
+  score: number;
+}
+
+export interface FinalAnalysis {
+  analysisVersion: 1;
+  generatedAt: string;
+  highlights: {
+    mostLiked: FinalAnalysisPlayer[];
+    mostDisliked: FinalAnalysisPlayer[];
+    mostControversial: FinalAnalysisPlayer[];
+    strongestAffinity: AnalysisPairHighlight[];
+    strongestRivalry: AnalysisPairHighlight[];
+    mostSameChoices: AnalysisPairHighlight[];
+  };
+  players: FinalAnalysisPlayer[];
+}
+
+export interface GameFinishedView {
+  sessionId: string;
+  leaderboard: LeaderboardEntry[];
+  analysis?: PublicFinalAnalysis;
+}
+
+export interface PublicFinalAnalysis {
+  analysisVersion: 1;
+  generatedAt: string;
+  highlights: {
+    mostLiked: AnalysisPlayer[];
+    mostDisliked: AnalysisPlayer[];
+    mostControversial: AnalysisPlayer[];
+    strongestAffinity: AnalysisPairHighlight[];
+    strongestRivalry: AnalysisPairHighlight[];
+    mostSameChoices: AnalysisPairHighlight[];
+  };
 }

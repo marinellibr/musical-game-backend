@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const redisStore = vi.hoisted(() => new Map<string, string>());
 const mongoCreates = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 const mongoUpdates = vi.hoisted(() => [] as Array<{ sessionId: string; patch: Record<string, unknown> }>);
+const mongoFinalizations = vi.hoisted(() => [] as Array<{ sessionId: string; snapshot: Record<string, unknown> }>);
+const finalizationFailure = vi.hoisted(() => ({ enabled: false }));
+const redisSets = vi.hoisted(() => [] as Array<unknown[]>);
 const fakeRedis = vi.hoisted(() => ({
   async exists(key: string) {
     return redisStore.has(key) ? 1 : 0;
@@ -10,8 +13,9 @@ const fakeRedis = vi.hoisted(() => ({
   async get(key: string) {
     return redisStore.get(key) ?? null;
   },
-  async set(key: string, value: string) {
+  async set(key: string, value: string, ...args: unknown[]) {
     redisStore.set(key, value);
+    redisSets.push([key, ...args]);
     return "OK";
   },
 }));
@@ -47,6 +51,8 @@ vi.mock("../src/repositories/MongoSessionRepository", () => ({
   default: class {
     async create(session: Record<string, unknown>) { mongoCreates.push(session); return null; }
     async update(sessionId: string, patch: Record<string, unknown>) { mongoUpdates.push({ sessionId, patch }); return null; }
+    async finalizeV2(sessionId: string, snapshot: Record<string, unknown>) { if (finalizationFailure.enabled) throw new Error("mongo unavailable"); mongoFinalizations.push({ sessionId, snapshot }); return { sessionId, gameVersion: "v2", ...snapshot }; }
+    async findResult() { return null; }
   },
 }));
 
@@ -57,6 +63,9 @@ describe("room player lifecycle", () => {
     redisStore.clear();
     mongoCreates.length = 0;
     mongoUpdates.length = 0;
+    mongoFinalizations.length = 0;
+    redisSets.length = 0;
+    finalizationFailure.enabled = false;
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-17T00:00:00Z"));
   });
@@ -230,6 +239,33 @@ describe("room player lifecycle", () => {
     const finished = await RoomService.prepareNextRound(host.roomCode, host.player.playerId);
     expect(finished.status).toBe("GAME_RESULTS");
     expect(mongoUpdates.at(-1)?.patch).toMatchObject({ $set: { status: "FINISHED" } });
+  });
+
+  it("consolidates a V2 final snapshot once, keeps retry possible on Mongo failure, and applies the finished TTL", async () => {
+    const host = await RoomService.createRoom("Host", true, "v2");
+    await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    const stored = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    stored.status = "ROUND_RESULTS";
+    stored.game.round = stored.game.totalRounds;
+    stored.game.historicalRounds = [];
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(stored));
+
+    finalizationFailure.enabled = true;
+    await expect(RoomService.prepareNextRound(host.roomCode, host.player.playerId)).rejects.toThrow("mongo unavailable");
+    expect(JSON.parse(redisStore.get(`room:${host.roomCode}`)!).status).toBe("ROUND_RESULTS");
+    expect(mongoFinalizations).toHaveLength(0);
+
+    finalizationFailure.enabled = false;
+    const finished = await RoomService.prepareNextRound(host.roomCode, host.player.playerId);
+    expect(finished.status).toBe("GAME_RESULTS");
+    expect(mongoFinalizations).toHaveLength(1);
+    expect(mongoFinalizations[0].snapshot).toMatchObject({ analysis: { analysisVersion: 1 }, rounds: [], finalRanking: [] });
+    expect(redisSets.at(-1)).toEqual([`room:${host.roomCode}`, "EX", 14_400]);
+
+    await RoomService.prepareNextRound(host.roomCode, host.player.playerId);
+    expect(mongoFinalizations).toHaveLength(1);
   });
 
   it("does not start the game with fewer than three playing participants", async () => {

@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { UpdateQuery } from "mongoose";
-import { GameSettings, GameVersion } from "../game/gameTypes";
+import { FinalAnalysis, GameSettings, GameVersion, HistoricalRound, LeaderboardEntry } from "../game/gameTypes";
 
 export interface GameSessionRecord {
   sessionId: string;
@@ -11,8 +11,9 @@ export interface GameSessionRecord {
   settings: GameSettings;
   finishedAt?: Date;
   players: unknown[];
-  rounds: unknown[];
-  finalRanking?: unknown[];
+  rounds: HistoricalRound[] | unknown[];
+  finalRanking?: LeaderboardEntry[] | unknown[];
+  analysis?: FinalAnalysis;
   summary?: Record<string, unknown>;
 }
 
@@ -28,6 +29,7 @@ const Schema = new mongoose.Schema(
     players: Array,
     rounds: Array,
     finalRanking: Array,
+    analysis: Object,
     summary: Object,
   },
   { collection: "game_sessions" },
@@ -48,5 +50,20 @@ export default class MongoSessionRepository {
 
   async find(sessionId: string) {
     return Model.findOne({ sessionId }).lean();
+  }
+
+  async finalizeV2(sessionId: string, snapshot: { finishedAt: Date; players: unknown[]; rounds: HistoricalRound[]; finalRanking: LeaderboardEntry[]; analysis: FinalAnalysis }) {
+    const finalized = await Model.findOneAndUpdate(
+      { sessionId, status: { $ne: "FINISHED" } },
+      { $set: { status: "FINISHED", ...snapshot } },
+      { new: true },
+    ).lean();
+    return finalized || Model.findOne({ sessionId }).lean();
+  }
+
+  async findResult(sessionId: string) {
+    return Model.findOne({ sessionId, status: "FINISHED" })
+      .select({ _id: 0, sessionId: 1, gameVersion: 1, finalRanking: 1, analysis: 1 })
+      .lean();
   }
 }

@@ -5,6 +5,7 @@ const router = Router();
 
 router.post("/", RoomController.createRoom);
 router.post("/:roomCode/join", RoomController.joinRoom);
+router.get("/sessions/:sessionId/result", RoomController.getSessionResult);
 router.get("/:roomCode", RoomController.getRoom);
 
 export default router;

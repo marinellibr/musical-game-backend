@@ -31,6 +31,10 @@ export const openApiDocument = {
     "voting:start": {
       description: "Host inicia VOTING. Na V2 exige ao menos um non-host elegível pronto, exceto quando não existe non-host elegível.",
     },
+    "game:finished": {
+      description: "Emitido somente após a consolidação Mongo da sessão V2; contém apenas leaderboard e análise final.",
+      payload: { $ref: "#/components/schemas/GameFinishedView" },
+    },
   },
   servers: [
     { url: "http://localhost:3000", description: "Desenvolvimento local" },
@@ -139,6 +143,17 @@ export const openApiDocument = {
             },
           },
           "404": { $ref: "#/components/responses/RoomNotFound" },
+        },
+      },
+    },
+    "/rooms/sessions/{sessionId}/result": {
+      get: {
+        tags: ["Rooms"],
+        summary: "Recupera o resultado consolidado de uma sessão V2 concluída",
+        parameters: [{ name: "sessionId", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": { description: "Leaderboard e análise final", content: { "application/json": { schema: { $ref: "#/components/schemas/GameFinishedView" } } } },
+          "404": { description: "Resultado V2 não encontrado", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
         },
       },
     },
@@ -303,6 +318,7 @@ export const openApiDocument = {
         required: ["roomCode", "status", "gameVersion", "host", "players", "settings"],
         properties: {
           roomCode: { type: "string", example: "R78X" },
+          sessionId: { type: "string", nullable: true },
           status: {
             type: "string",
             enum: [
@@ -422,6 +438,10 @@ export const openApiDocument = {
       },
       SpotifyTrack: { type: "object", required: ["trackId", "title"], properties: { trackId: { type: "string" }, trackUri: { type: "string" }, title: { type: "string" }, artist: { type: "string" }, album: { type: "string" }, albumId: { type: "string" }, image: { type: "string", format: "uri", description: "Imagem de capa da faixa ou do álbum" } } },
       LeaderboardEntry: { type: "object", required: ["playerId", "username", "totalLikes", "totalDislikes", "voteBalance", "position"], properties: { playerId: { type: "string" }, username: { type: "string" }, totalLikes: { type: "integer", minimum: 0 }, totalDislikes: { type: "integer", minimum: 0 }, voteBalance: { type: "integer" }, position: { type: "integer", minimum: 1 } } },
+      AnalysisPlayer: { type: "object", required: ["playerId", "username"], properties: { playerId: { type: "string" }, username: { type: "string" } } },
+      AnalysisPairHighlight: { type: "object", required: ["players", "roundsTogether", "likesBetween", "dislikesBetween", "sameChoices", "score"], properties: { players: { type: "array", minItems: 2, maxItems: 2, items: { $ref: "#/components/schemas/AnalysisPlayer" } }, roundsTogether: { type: "integer" }, likesBetween: { type: "integer" }, dislikesBetween: { type: "integer" }, sameChoices: { type: "integer" }, score: { type: "number" } } },
+      FinalAnalysis: { type: "object", required: ["analysisVersion", "generatedAt", "highlights"], properties: { analysisVersion: { type: "integer", enum: [1] }, generatedAt: { type: "string", format: "date-time" }, highlights: { type: "object", properties: { mostLiked: { type: "array", items: { $ref: "#/components/schemas/AnalysisPlayer" } }, mostDisliked: { type: "array", items: { $ref: "#/components/schemas/AnalysisPlayer" } }, mostControversial: { type: "array", items: { $ref: "#/components/schemas/AnalysisPlayer" } }, strongestAffinity: { type: "array", items: { $ref: "#/components/schemas/AnalysisPairHighlight" } }, strongestRivalry: { type: "array", items: { $ref: "#/components/schemas/AnalysisPairHighlight" } }, mostSameChoices: { type: "array", items: { $ref: "#/components/schemas/AnalysisPairHighlight" } } } } } },
+      GameFinishedView: { type: "object", required: ["sessionId", "leaderboard"], properties: { sessionId: { type: "string" }, leaderboard: { type: "array", items: { $ref: "#/components/schemas/LeaderboardEntry" } }, analysis: { $ref: "#/components/schemas/FinalAnalysis" } } },
       YouTubeMetadataResponse: {
         type: "object",
         required: ["videoId"],

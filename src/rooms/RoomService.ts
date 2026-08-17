@@ -26,7 +26,12 @@ import {
   VOTING_DURATION_MS,
   RoundResultView,
   ResultRevealStage,
+  FinalAnalysis,
+  GameFinishedView,
+  HistoricalRound,
+  PublicFinalAnalysis,
 } from "../game/gameTypes";
+import FinalAnalysisService from "../game/FinalAnalysisService";
 
 const repo = new RedisRoomRepository();
 const log = logger();
@@ -357,6 +362,7 @@ export default class RoomService {
       votingEndsAt: null,
       roundResult: null,
       resultRevealStage: "AUTHORS",
+      historicalRounds: [],
     };
     const isNewSession = !room.sessionId;
     room.sessionId ||= generateId("session");
@@ -636,13 +642,15 @@ export default class RoomService {
         room.game.cumulativeVotes[submission.playerId] = totals;
       }
       room.game.lastConsolidatedRound = room.game.round;
+      room.game.historicalRounds ||= [];
+      room.game.historicalRounds.push(this.toHistoricalRound(room));
     }
     room.game.phase = "ROUND_RESULTS";
     room.game.resultRevealStage = "AUTHORS";
     room.status = "ROUND_RESULTS";
     room.game.roundResult = { round: room.game.round, totalRounds: room.game.totalRounds, theme: room.game.currentTheme, revealStage: "AUTHORS", ranking, leaderboard: this.toLeaderboard(room), isLastRound: room.game.round >= room.game.totalRounds };
     await repo.saveRoom(normalizedCode, room);
-    if (room.sessionId) await sessionRepo.update(room.sessionId, { $push: { rounds: { roundNumber: room.game.round, theme: room.game.currentTheme, ranking, votes: room.game.votes } } });
+    if (room.sessionId && room.gameVersion === "v1") await sessionRepo.update(room.sessionId, { $push: { rounds: { roundNumber: room.game.round, theme: room.game.currentTheme, ranking, votes: room.game.votes } } });
     return room.game.roundResult;
   }
 
@@ -750,15 +758,27 @@ export default class RoomService {
     const room = await this.getRoomWithCleanup(normalizedCode);
     if (!room) throw roomNotFound();
     if (!room.players[requesterId]?.isHost) throw Object.assign(new Error("Host only action"), { code: "FORBIDDEN" });
+    if (room.gameVersion === "v2" && room.status === "GAME_RESULTS") return this.toPublicState(room);
     if (!room.game || room.status !== "ROUND_RESULTS") throw Object.assign(new Error("Invalid game phase"), { code: "INVALID_PHASE" });
     if (room.game.round >= room.game.totalRounds) {
-      room.status = "GAME_RESULTS";
-      if (room.sessionId) {
+      if (room.gameVersion === "v2" && room.sessionId) {
+        const analysis = room.game.finalAnalysis || FinalAnalysisService.calculate(room.game.historicalRounds || []);
+        await sessionRepo.finalizeV2(room.sessionId, {
+          finishedAt: new Date(),
+          players: this.historicalPlayers(room),
+          rounds: room.game.historicalRounds || [],
+          finalRanking: this.toLeaderboard(room),
+          analysis,
+        });
+        room.game.finalAnalysis = analysis;
+      } else if (room.sessionId) {
         await sessionRepo.update(room.sessionId, {
           $set: { status: "FINISHED", finishedAt: new Date(), finalRanking: this.toLeaderboard(room) },
         });
       }
-      await repo.saveRoom(normalizedCode, room);
+      room.status = "GAME_RESULTS";
+      if (room.gameVersion === "v2") await repo.saveCompletedRoom(normalizedCode, room);
+      else await repo.saveRoom(normalizedCode, room);
       return this.toPublicState(room);
     }
     const nextTheme = room.game.themePool[room.game.themePoolIndex + 1];
@@ -786,6 +806,7 @@ export default class RoomService {
     if (room.game) {
       if (typeof room.game.listeningFinished !== "boolean") { room.game.listeningFinished = false; settingsChanged = true; }
       if (!Array.isArray(room.game.listeningReadyPlayerIds)) { room.game.listeningReadyPlayerIds = []; settingsChanged = true; }
+      if (!Array.isArray(room.game.historicalRounds)) { room.game.historicalRounds = []; settingsChanged = true; }
     }
     if (room.gameVersion === "v2") {
       const validIds = new Set((await themeRepo.listCategories()).map((category) => category.id));
@@ -830,6 +851,7 @@ export default class RoomService {
     if (!host) throw new Error("Room host not found");
     return {
       roomCode: room.roomCode,
+      sessionId: room.sessionId,
       status: room.status,
       gameVersion: room.gameVersion || "v1",
       host: publicPlayer(host),
@@ -908,5 +930,46 @@ export default class RoomService {
       previous = entry;
       return { ...entry, position };
     });
+  }
+
+  private static toHistoricalRound(room: Room): HistoricalRound {
+    if (!room.game) throw new Error("Game state missing");
+    return {
+      roundNumber: room.game.round,
+      theme: room.game.currentTheme,
+      participants: room.game.roundParticipantIds.map((playerId) => ({ playerId, username: room.players[playerId]?.username || "Jogador" })),
+      submissions: Object.values(room.game.submissions).map((submission) => ({ ...submission, mediaKey: this.mediaKey(submission) })),
+      groups: room.game.submissionGroups.map((group) => ({ groupId: group.groupId, mediaKey: group.mediaKey, submissionIds: group.submissions.map((submission) => submission.submissionId) })),
+      votes: Object.entries(room.game.votes).map(([voterPlayerId, vote]) => ({ voterPlayerId, ...vote })),
+    };
+  }
+
+  private static historicalPlayers(room: Room) {
+    const players = new Map<string, { playerId: string; username: string; isHost: boolean; isPlaying: boolean }>();
+    for (const player of Object.values(room.players)) players.set(player.playerId, { playerId: player.playerId, username: player.username, isHost: player.isHost, isPlaying: player.isPlaying });
+    for (const round of room.game?.historicalRounds || []) for (const player of round.participants) if (!players.has(player.playerId)) players.set(player.playerId, { ...player, isHost: false, isPlaying: true });
+    return [...players.values()];
+  }
+
+  static async getFinishedResult(sessionId: string): Promise<GameFinishedView | null> {
+    const record = await sessionRepo.findResult(sessionId) as { sessionId?: string; gameVersion?: GameVersion; finalRanking?: GameFinishedView["leaderboard"]; analysis?: FinalAnalysis } | null;
+    if (!record?.sessionId || record.gameVersion !== "v2") return null;
+    return { sessionId: record.sessionId, leaderboard: record.finalRanking || [], ...(record.analysis ? { analysis: this.toPublicAnalysis(record.analysis) } : {}) };
+  }
+
+  static async getRuntimeFinishedResult(roomCode: string): Promise<GameFinishedView | null> {
+    const room = await this.getRoomWithCleanup(this.normalizeRoomCode(roomCode));
+    if (!room?.sessionId || room.status !== "GAME_RESULTS" || !room.game) return null;
+    return { sessionId: room.sessionId, leaderboard: this.toLeaderboard(room), ...(room.game.finalAnalysis ? { analysis: this.toPublicAnalysis(room.game.finalAnalysis) } : {}) };
+  }
+
+  private static toPublicAnalysis(analysis: FinalAnalysis): PublicFinalAnalysis {
+    const refs = (players: FinalAnalysis["highlights"]["mostLiked"]) => players.map(({ playerId, username }) => ({ playerId, username }));
+    return { analysisVersion: analysis.analysisVersion, generatedAt: analysis.generatedAt, highlights: {
+      ...analysis.highlights,
+      mostLiked: refs(analysis.highlights.mostLiked),
+      mostDisliked: refs(analysis.highlights.mostDisliked),
+      mostControversial: refs(analysis.highlights.mostControversial),
+    } };
   }
 }

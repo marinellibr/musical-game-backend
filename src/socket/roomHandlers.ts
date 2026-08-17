@@ -43,6 +43,8 @@ export async function authenticateAndJoin(
       await RoomService.getPublicRoomState(authenticated.roomCode),
     );
   }
+  const finished = await RoomService.getRuntimeFinishedResult(authenticated.roomCode);
+  if (finished) socket.emit("game:finished", finished);
   const submittedMedia = await RoomService.getPlayerSubmission(
     authenticated.roomCode,
     playerId,

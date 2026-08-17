@@ -312,7 +312,14 @@ export function initSocket(httpServer: HttpServer) {
       const roomCode = socket.data.roomCode as string | undefined;
       const requesterId = socket.data.playerId as string | undefined;
       if (!roomCode || !requesterId) return socketError(socket, Object.assign(new Error("Missing player information"), { code: "MISSING_CREDENTIALS" }));
-      try { await runRoomAction(roomCode, async () => { io.to(roomCode).emit("room:state", await RoomService.prepareNextRound(roomCode, requesterId)); }); }
+      try { await runRoomAction(roomCode, async () => {
+        const state = await RoomService.prepareNextRound(roomCode, requesterId);
+        io.to(roomCode).emit("room:state", state);
+        if (state.status === "GAME_RESULTS" && state.gameVersion === "v2") {
+          const result = await RoomService.getRuntimeFinishedResult(roomCode);
+          if (result) io.to(roomCode).emit("game:finished", result);
+        }
+      }); }
       catch (error) { socketError(socket, error); }
     });
     socket.on("disconnect", async () => {

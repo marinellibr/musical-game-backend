@@ -13,6 +13,7 @@ export const env = {
   SPOTIFY_CLIENT_SECRET: process.env.SPOTIFY_CLIENT_SECRET || "",
   YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY || "",
   ROOM_TTL_SECONDS: Number(process.env.ROOM_TTL_SECONDS || "21600"),
+  FINISHED_ROOM_TTL_SECONDS: Number(process.env.FINISHED_ROOM_TTL_SECONDS || "14400"),
   PLAYER_RECONNECT_TTL_SECONDS: Number(
     process.env.PLAYER_RECONNECT_TTL_SECONDS || "90",
   ),
