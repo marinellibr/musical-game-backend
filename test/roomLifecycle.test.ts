@@ -19,6 +19,18 @@ const fakeRedis = vi.hoisted(() => ({
 vi.mock("../src/config/redis", () => ({ getRedis: () => fakeRedis }));
 vi.mock("../src/repositories/MongoThemeRepository", () => ({
   default: class {
+    async listCategories() {
+      return ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"].map((id) => ({ id, label: id, description: id, examples: [{ id: `${id}_1`, title: `${id} 1` }] }));
+    }
+    async balancedPool(categories: string[], size: number) {
+      const capacity = categories.length === 2 && categories.includes("COVERS") ? 7 : categories.length * 5;
+      return Array.from({ length: Math.min(size, capacity) }, (_, index) => ({
+        id: `${categories[index % categories.length]}_${Math.floor(index / categories.length)}`,
+        title: `Tema ${index + 1}`,
+        type: "MUSIC",
+        category: categories[index % categories.length],
+      }));
+    }
     async randomPool() {
       return Array.from({ length: 20 }, (_, index) => ({
         id: `theme_${index + 1}`,
@@ -126,6 +138,40 @@ describe("room player lifecycle", () => {
     const state = await RoomService.startGame(host.roomCode, host.player.playerId);
 
     expect(state.status).toBe("THEME_REVEAL");
+  });
+
+  it("configures V2 categories from real availability and balances the preselected pool", async () => {
+    const host = await RoomService.createRoom("Host", true, "v2");
+    const bruno = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
+    const initial = await RoomService.getPublicRoomState(host.roomCode);
+    expect(initial).toMatchObject({ gameVersion: "v2", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+    await expect(RoomService.updateSettings(host.roomCode, bruno.player.playerId, { ...initial.settings, selectedCategories: ["INSTRUMENTS", "ALBUM"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(RoomService.updateSettings(host.roomCode, host.player.playerId, { ...initial.settings, selectedCategories: ["INSTRUMENTS"] })).rejects.toMatchObject({ code: "MIN_CATEGORIES_REQUIRED" });
+    await expect(RoomService.updateSettings(host.roomCode, host.player.playerId, { ...initial.settings, selectedCategories: ["INSTRUMENTS", "INVALID"] })).rejects.toMatchObject({ code: "INVALID_CATEGORY" });
+    await RoomService.updateSettings(host.roomCode, host.player.playerId, { ...initial.settings, totalRounds: 10, selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] });
+    await RoomService.startGame(host.roomCode, host.player.playerId);
+    const stored = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
+    const firstTen = stored.game.themePool.slice(0, 10);
+    expect(new Set(firstTen.map((theme: { id: string }) => theme.id)).size).toBe(10);
+    const counts = firstTen.reduce((result: Record<string, number>, theme: { category: string }) => ({ ...result, [theme.category]: (result[theme.category] || 0) + 1 }), {});
+    expect(Math.max(...Object.values(counts)) - Math.min(...Object.values(counts))).toBeLessThanOrEqual(1);
+    expect(mongoCreates.at(-1)).toMatchObject({ gameVersion: "v2", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+    stored.status = "GAME_RESULTS";
+    redisStore.set(`room:${host.roomCode}`, JSON.stringify(stored));
+    const replay = await RoomService.restartGame(host.roomCode, host.player.playerId);
+    expect(replay).toMatchObject({ gameVersion: "v2", status: "LOBBY", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+    expect(mongoCreates.at(-1)).toMatchObject({ gameVersion: "v2", settings: { selectedCategories: ["INSTRUMENTS", "ALBUM", "HOT_TAKE", "COVERS"] } });
+  });
+
+  it("rejects a V2 category combination with an insufficient distinct theme pool", async () => {
+    const host = await RoomService.createRoom("Host", true, "v2");
+    await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
+    const state = await RoomService.getPublicRoomState(host.roomCode);
+    await RoomService.updateSettings(host.roomCode, host.player.playerId, { ...state.settings, totalRounds: 10, selectedCategories: ["INSTRUMENTS", "COVERS"] });
+    await expect(RoomService.startGame(host.roomCode, host.player.playerId)).rejects.toMatchObject({ code: "NOT_ENOUGH_THEMES" });
+    expect((await RoomService.getPublicRoomState(host.roomCode)).status).toBe("LOBBY");
   });
 
   it("uses typed lobby settings and blocks non-host updates", async () => {

@@ -237,6 +237,7 @@ export default class RoomService {
       const categories = await themeRepo.listCategories();
       const validIds = new Set(categories.map((category) => category.id));
       const selected = normalizedSettings.selectedCategories || [];
+      if ((settings.selectedCategories || []).length !== selected.length) throw Object.assign(new Error("Duplicate game category"), { code: "INVALID_CATEGORY" });
       if (selected.length < 2) throw Object.assign(new Error("Choose at least 2 categories"), { code: "MIN_CATEGORIES_REQUIRED" });
       if (selected.some((category) => !validIds.has(category))) throw Object.assign(new Error("Invalid game category"), { code: "INVALID_CATEGORY" });
     }

@@ -361,11 +361,12 @@ export const openApiDocument = {
       },
       RoomEntryResponse: {
         type: "object",
-        required: ["roomCode", "player", "playerToken"],
+        required: ["roomCode", "player", "playerToken", "gameVersion"],
         properties: {
           roomCode: { type: "string", example: "R78X" },
           player: { $ref: "#/components/schemas/PublicPlayer" },
           playerToken: { type: "string", example: "token_123" },
+          gameVersion: { type: "string", enum: ["v1", "v2"] },
         },
       },
       ErrorResponse: {
