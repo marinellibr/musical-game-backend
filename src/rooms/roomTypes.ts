@@ -5,6 +5,7 @@ export interface Player {
   isHost: boolean;
   isPlaying: boolean;
   connected: boolean;
+  disconnectedAt: number | null;
   lastSeenAt: number;
 }
 

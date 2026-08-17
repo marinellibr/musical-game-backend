@@ -13,7 +13,13 @@ export const env = {
   SPOTIFY_CLIENT_SECRET: process.env.SPOTIFY_CLIENT_SECRET || "",
   YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY || "",
   ROOM_TTL_SECONDS: Number(process.env.ROOM_TTL_SECONDS || "21600"),
+  PLAYER_RECONNECT_TTL_SECONDS: Number(
+    process.env.PLAYER_RECONNECT_TTL_SECONDS || "90",
+  ),
 };
+
+export const PLAYER_RECONNECT_TTL_SECONDS = env.PLAYER_RECONNECT_TTL_SECONDS;
+export const PLAYER_RECONNECT_TTL_MS = PLAYER_RECONNECT_TTL_SECONDS * 1000;
 
 export const corsOrigins = Array.from(
   new Set(

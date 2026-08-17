@@ -1,7 +1,7 @@
 import { Server as HttpServer } from "http";
 import logger from "pino";
 import { Server, Socket } from "socket.io";
-import { corsOrigins } from "../config/env";
+import { corsOrigins, PLAYER_RECONNECT_TTL_MS } from "../config/env";
 import RoomService from "../rooms/RoomService";
 import { authenticateAndJoin } from "./roomHandlers";
 
@@ -40,6 +40,39 @@ export function initSocket(httpServer: HttpServer) {
     socket.on("room:join", (payload: Record<string, unknown>) => {
       connectPlayer(socket, payload || {}).catch((error) => socketError(socket, error));
     });
+    socket.on("player:remove", async (payload: { playerId?: string }) => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId || !payload?.playerId) {
+        socketError(
+          socket,
+          Object.assign(new Error("Missing player information"), {
+            code: "MISSING_CREDENTIALS",
+          }),
+        );
+        return;
+      }
+      try {
+        const state = await RoomService.removePlayer(
+          roomCode,
+          requesterId,
+          payload.playerId,
+        );
+        const roomSockets = await io.in(roomCode).fetchSockets();
+        for (const targetSocket of roomSockets) {
+          if (targetSocket.data.playerId === payload.playerId) {
+            targetSocket.emit("player:removed", {
+              code: "PLAYER_REMOVED",
+              message: "You were removed from the room by the host",
+            });
+            targetSocket.disconnect(true);
+          }
+        }
+        io.to(roomCode).emit("room:state", state);
+      } catch (error) {
+        socketError(socket, error);
+      }
+    });
     socket.on("disconnect", async () => {
       log.info({ id: socket.id }, "socket disconnected");
       const roomCode = socket.data.roomCode as string | undefined;
@@ -55,6 +88,17 @@ export function initSocket(httpServer: HttpServer) {
       try {
         const state = await RoomService.setPlayerConnected(roomCode, playerId, false);
         io.to(roomCode).emit("room:state", state);
+        const cleanupTimer = setTimeout(async () => {
+          try {
+            const cleanedState = await RoomService.cleanupExpiredPlayers(roomCode);
+            io.to(roomCode).emit("room:state", cleanedState);
+          } catch (error) {
+            if ((error as { code?: string }).code !== "ROOM_NOT_FOUND") {
+              log.error({ roomCode }, "failed to clean expired player sessions");
+            }
+          }
+        }, PLAYER_RECONNECT_TTL_MS + 250);
+        cleanupTimer.unref();
       } catch (error) {
         if ((error as { code?: string }).code !== "ROOM_NOT_FOUND") {
           log.error({ roomCode, playerId }, "failed to update player presence");

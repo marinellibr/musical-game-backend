@@ -4,6 +4,9 @@ import { Player, Room } from "../rooms/roomTypes";
 import { generateRoomCode } from "../utils/roomCode";
 
 const PREFIX = "room:";
+const SESSION_PREFIX = "room-session:";
+
+export type InvalidSessionReason = "expired" | "removed";
 
 export default class RedisRoomRepository {
   private readonly redis = getRedis();
@@ -42,5 +45,27 @@ export default class RedisRoomRepository {
       "EX",
       env.ROOM_TTL_SECONDS,
     );
+  }
+
+  async markSessionInvalid(
+    roomCode: string,
+    playerId: string,
+    reason: InvalidSessionReason,
+  ): Promise<void> {
+    await this.redis.set(
+      `${SESSION_PREFIX}${roomCode}:${playerId}`,
+      reason,
+      "EX",
+      env.ROOM_TTL_SECONDS,
+    );
+  }
+
+  async getInvalidSessionReason(
+    roomCode: string,
+    playerId: string,
+  ): Promise<InvalidSessionReason | null> {
+    return (await this.redis.get(
+      `${SESSION_PREFIX}${roomCode}:${playerId}`,
+    )) as InvalidSessionReason | null;
   }
 }
