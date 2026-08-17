@@ -7,6 +7,8 @@ import { PLAYER_RECONNECT_TTL_MS } from "../config/env";
 const repo = new RedisRoomRepository();
 const log = logger();
 
+export const MIN_PLAYERS_TO_START = 2;
+
 function roomNotFound() {
   return Object.assign(new Error("Room not found"), { code: "ROOM_NOT_FOUND" });
 }
@@ -173,6 +175,38 @@ export default class RoomService {
       { roomCode: normalizedCode, requesterId, targetPlayerId },
       "player removed",
     );
+    return this.toPublicState(room);
+  }
+
+  static async startGame(
+    roomCode: string,
+    requesterId: string,
+  ): Promise<RoomPublicState> {
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const room = await this.getRoomWithCleanup(normalizedCode);
+    if (!room) throw roomNotFound();
+    const requester = room.players[requesterId];
+    if (!requester?.isHost) {
+      throw Object.assign(new Error("Only the host can start the game"), {
+        code: "FORBIDDEN",
+      });
+    }
+    const playingCount = Object.values(room.players).filter(
+      (player) => player.isPlaying,
+    ).length;
+    if (playingCount < MIN_PLAYERS_TO_START) {
+      throw Object.assign(new Error("Not enough players to start the game"), {
+        code: "NOT_ENOUGH_PLAYERS",
+      });
+    }
+    if (room.status !== "LOBBY") {
+      throw Object.assign(new Error("The game has already started"), {
+        code: "GAME_ALREADY_STARTED",
+      });
+    }
+    room.status = "THEME_REVEAL";
+    await repo.saveRoom(normalizedCode, room);
+    log.info({ roomCode: normalizedCode, requesterId }, "game started");
     return this.toPublicState(room);
   }
 

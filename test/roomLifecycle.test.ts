@@ -93,4 +93,21 @@ describe("room player lifecycle", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect((await RoomService.getPublicRoomState(host.roomCode)).players).toHaveLength(2);
   });
+
+  it("starts the game when the host has at least two playing participants", async () => {
+    const host = await RoomService.createRoom("Host", true);
+    await RoomService.joinRoom(host.roomCode, "Bruno");
+
+    const state = await RoomService.startGame(host.roomCode, host.player.playerId);
+
+    expect(state.status).toBe("THEME_REVEAL");
+  });
+
+  it("does not start the game with fewer than two playing participants", async () => {
+    const host = await RoomService.createRoom("Host", true);
+
+    await expect(
+      RoomService.startGame(host.roomCode, host.player.playerId),
+    ).rejects.toMatchObject({ code: "NOT_ENOUGH_PLAYERS" });
+  });
 });

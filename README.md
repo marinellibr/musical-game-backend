@@ -19,6 +19,17 @@ npm run build
 npm start
 ```
 
+## API documentation
+
+With the backend running, the interactive Swagger UI is available at:
+
+- `http://localhost:3000/docs`
+- `https://musical-game-backend.onrender.com/docs` in production
+
+The raw OpenAPI specification is available at `GET /openapi.json`. Keep
+`src/docs/openapi.ts` synchronized whenever an HTTP route, payload, response,
+or status code changes.
+
 ## Testing connections
 
 Fill in `.env`, then run:
@@ -39,5 +50,7 @@ HTTP endpoints:
 - `GET /rooms/:roomCode` -> public room state
 - `GET /spotify/search?q=` -> spotify search (integration)
 - `GET /youtube/metadata?url=` -> youtube metadata
+- `GET /docs` -> Swagger UI
+- `GET /openapi.json` -> OpenAPI specification
 
-Socket.IO events documented in code.
+Socket.IO events are outside the OpenAPI protocol and remain documented in code.

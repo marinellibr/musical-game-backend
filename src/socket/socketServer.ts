@@ -73,6 +73,25 @@ export function initSocket(httpServer: HttpServer) {
         socketError(socket, error);
       }
     });
+    socket.on("game:start", async () => {
+      const roomCode = socket.data.roomCode as string | undefined;
+      const requesterId = socket.data.playerId as string | undefined;
+      if (!roomCode || !requesterId) {
+        socketError(
+          socket,
+          Object.assign(new Error("Missing player information"), {
+            code: "MISSING_CREDENTIALS",
+          }),
+        );
+        return;
+      }
+      try {
+        const state = await RoomService.startGame(roomCode, requesterId);
+        io.to(roomCode).emit("room:state", state);
+      } catch (error) {
+        socketError(socket, error);
+      }
+    });
     socket.on("disconnect", async () => {
       log.info({ id: socket.id }, "socket disconnected");
       const roomCode = socket.data.roomCode as string | undefined;
