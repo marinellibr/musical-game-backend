@@ -15,7 +15,9 @@ export function getRedis() {
     }
     client = new Redis(env.REDIS_URL);
     client.on("connect", () => log.info("Redis connected"));
-    client.on("error", (err) => log.error({ err }, "Redis error"));
+    client.on("error", (err) =>
+      log.error({ code: (err as NodeJS.ErrnoException).code }, "Redis connection error"),
+    );
   }
   return client;
 }

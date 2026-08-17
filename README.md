@@ -19,6 +19,18 @@ npm run build
 npm start
 ```
 
+## Testing connections
+
+Fill in `.env`, then run:
+
+```bash
+npm run test:connections
+```
+
+This checks the configured Redis and MongoDB connections, Spotify and YouTube
+APIs, and the Express `GET /health` endpoint. The command exits with status 1
+if one or more checks fail.
+
 HTTP endpoints:
 
 - `GET /health`
