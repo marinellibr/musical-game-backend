@@ -118,9 +118,10 @@ describe("room player lifecycle", () => {
     expect((await RoomService.getPublicRoomState(host.roomCode)).players).toHaveLength(2);
   });
 
-  it("starts the game when the host has at least two playing participants", async () => {
+  it("starts the game when the host has at least three playing participants", async () => {
     const host = await RoomService.createRoom("Host", true);
     await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
 
     const state = await RoomService.startGame(host.roomCode, host.player.playerId);
 
@@ -130,6 +131,7 @@ describe("room player lifecycle", () => {
   it("uses typed lobby settings and blocks non-host updates", async () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     expect((await RoomService.getPublicRoomState(host.roomCode)).settings).toEqual({ totalRounds: 10, choosingDurationSeconds: 180 });
 
     await expect(RoomService.updateSettings(host.roomCode, player.player.playerId, { totalRounds: 5, choosingDurationSeconds: 360 })).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -146,6 +148,7 @@ describe("room player lifecycle", () => {
     const host = await RoomService.createRoom("TV", false);
     const player = await RoomService.joinRoom(host.roomCode, "Bruno");
     await RoomService.joinRoom(host.roomCode, "Carol");
+    await RoomService.joinRoom(host.roomCode, "Rafa");
     await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 540 });
     await RoomService.startGame(host.roomCode, host.player.playerId);
     const before = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
@@ -170,6 +173,7 @@ describe("room player lifecycle", () => {
   it("ends the game at the configured final round", async () => {
     const host = await RoomService.createRoom("Host", true);
     await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.updateSettings(host.roomCode, host.player.playerId, { totalRounds: 3, choosingDurationSeconds: 180 });
     await RoomService.startGame(host.roomCode, host.player.playerId);
     const stored = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
@@ -182,8 +186,9 @@ describe("room player lifecycle", () => {
     expect(mongoUpdates.at(-1)?.patch).toMatchObject({ $set: { status: "FINISHED" } });
   });
 
-  it("does not start the game with fewer than two playing participants", async () => {
+  it("does not start the game with fewer than three playing participants", async () => {
     const host = await RoomService.createRoom("Host", true);
+    await RoomService.joinRoom(host.roomCode, "Bruno");
 
     await expect(
       RoomService.startGame(host.roomCode, host.player.playerId),
@@ -193,6 +198,7 @@ describe("room player lifecycle", () => {
   it("records typed reactions and clears them when the host swaps the theme", async () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
 
     const reacted = await RoomService.reactToTheme(
@@ -211,6 +217,7 @@ describe("room player lifecycle", () => {
   it("lets only the host start a round and prevents starting it twice", async () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Bruno");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
 
     await expect(
@@ -288,10 +295,12 @@ describe("room player lifecycle", () => {
     const host = await RoomService.createRoom("TV", false);
     const luiz = await RoomService.joinRoom(host.roomCode, "Luiz");
     const ana = await RoomService.joinRoom(host.roomCode, "Ana");
+    const rafa = await RoomService.joinRoom(host.roomCode, "Rafa");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     await RoomService.startRound(host.roomCode, host.player.playerId);
     await RoomService.submitChoice(host.roomCode, luiz.player.playerId, { source: "SPOTIFY", title: "Midnight City", spotifyTrackId: "midnight" });
     await RoomService.submitChoice(host.roomCode, ana.player.playerId, { source: "SPOTIFY", title: "Nightcall", spotifyTrackId: "nightcall" });
+    await RoomService.submitChoice(host.roomCode, rafa.player.playerId, { source: "SPOTIFY", title: "Nightcall", spotifyTrackId: "nightcall" });
     await RoomService.startListening(host.roomCode, host.player.playerId);
     await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
     await RoomService.moveListening(host.roomCode, host.player.playerId, "next");
@@ -306,6 +315,7 @@ describe("room player lifecycle", () => {
   it("preserves listening and voting state for reconnects", async () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Player");
+    const carol = await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     const roomWithMoment = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
     roomWithMoment.game.currentTheme.type = "MOMENT";
@@ -313,6 +323,7 @@ describe("room player lifecycle", () => {
     await RoomService.startRound(host.roomCode, host.player.playerId);
     await RoomService.submitChoice(host.roomCode, host.player.playerId, { source: "YOUTUBE", title: "Moment", youtubeVideoId: "abc123", startTime: 184 });
     await RoomService.submitChoice(host.roomCode, player.player.playerId, { source: "YOUTUBE", title: "Outro", youtubeVideoId: "def456", startTime: 0 });
+    await RoomService.submitChoice(host.roomCode, carol.player.playerId, { source: "YOUTUBE", title: "Outro", youtubeVideoId: "def456", startTime: 0 });
     const before = await RoomService.startListening(host.roomCode, host.player.playerId);
     const restored = await RoomService.getListeningState(host.roomCode);
     expect(restored).toEqual(before);
@@ -321,6 +332,7 @@ describe("room player lifecycle", () => {
   it("keeps an active player reconnectable beyond 90 seconds during choosing", async () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Player");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     await RoomService.startRound(host.roomCode, host.player.playerId);
     await RoomService.setPlayerConnected(host.roomCode, player.player.playerId, true);
@@ -332,6 +344,7 @@ describe("room player lifecycle", () => {
   it("marks late joins as waiting and blocks their submission", async () => {
     const host = await RoomService.createRoom("Host", true);
     await RoomService.joinRoom(host.roomCode, "Active");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     await RoomService.startRound(host.roomCode, host.player.playerId);
     const late = await RoomService.joinRoom(host.roomCode, "Late");
@@ -342,6 +355,7 @@ describe("room player lifecycle", () => {
   it("activates waiting players before the next round", async () => {
     const host = await RoomService.createRoom("Host", true);
     await RoomService.joinRoom(host.roomCode, "Active");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     await RoomService.startRound(host.roomCode, host.player.playerId);
     const late = await RoomService.joinRoom(host.roomCode, "Late");
@@ -355,6 +369,7 @@ describe("room player lifecycle", () => {
   it("allows only tracks from the configured album", async () => {
     const host = await RoomService.createRoom("Host", true);
     const player = await RoomService.joinRoom(host.roomCode, "Player");
+    await RoomService.joinRoom(host.roomCode, "Carol");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);
     persisted.game.currentTheme.type = "ALBUM";
@@ -369,6 +384,7 @@ describe("room player lifecycle", () => {
     const host = await RoomService.createRoom("TV", false);
     const luiz = await RoomService.joinRoom(host.roomCode, "Luiz");
     const carol = await RoomService.joinRoom(host.roomCode, "Carol");
+    await RoomService.joinRoom(host.roomCode, "Rafa");
     await RoomService.startGame(host.roomCode, host.player.playerId);
     await RoomService.startRound(host.roomCode, host.player.playerId);
     const persisted = JSON.parse(redisStore.get(`room:${host.roomCode}`)!);

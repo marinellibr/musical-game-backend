@@ -32,7 +32,7 @@ const log = logger();
 const themeRepo = new MongoThemeRepository();
 const sessionRepo = new MongoSessionRepository();
 
-export const MIN_PLAYERS_TO_START = 2;
+export const MIN_PLAYERS_TO_START = 3;
 
 function roomNotFound() {
   return Object.assign(new Error("Room not found"), { code: "ROOM_NOT_FOUND" });

@@ -7,6 +7,9 @@ export const openApiDocument = {
       "API HTTP do Musical Game. A sincronização em tempo real da sala é feita por Socket.IO.",
   },
   "x-socket-events": {
+    "game:start": {
+      description: "Host inicia a partida quando existem pelo menos 3 jogadores participantes na sala.",
+    },
     "game:settings:update": {
       description: "Host atualiza os presets da partida enquanto a sala está no lobby.",
       payload: { $ref: "#/components/schemas/GameSettings" },
