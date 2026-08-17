@@ -474,25 +474,38 @@ export default class RoomService {
       dislikes: 0,
     };
     room.game.submissions[playerId] = submission;
+    if (room.game.roundParticipantIds.length > 0 && room.game.roundParticipantIds.every((id) => Boolean(room.game?.submissions[id]))) {
+      this.beginListening(room);
+    }
     await repo.saveRoom(normalizedCode, room);
     return submission;
   }
 
   static async startListening(roomCode: string, requesterId: string): Promise<PublicListeningState> {
-    const room = await this.requireHostPhase(roomCode, requesterId, "CHOOSING");
+    const normalizedCode = this.normalizeRoomCode(roomCode);
+    const currentRoom = await this.getRoomWithCleanup(normalizedCode);
+    if (!currentRoom) throw roomNotFound();
+    if (!currentRoom.players[requesterId]?.isHost) throw Object.assign(new Error("Host only action"), { code: "FORBIDDEN" });
+    if (currentRoom.status === "LISTENING" && currentRoom.game) return this.toListeningState(currentRoom);
+    const room = await this.requireHostPhase(normalizedCode, requesterId, "CHOOSING");
     if (!room.game) throw new Error("Game state missing");
     const playingIds = room.game.roundParticipantIds;
     if (Date.now() < (room.game.roundEndsAt || 0) && playingIds.some((id) => !room.game?.submissions[id])) {
       throw Object.assign(new Error("Waiting for player submissions"), { code: "SUBMISSIONS_PENDING" });
     }
+    this.beginListening(room);
+    await repo.saveRoom(room.roomCode, room);
+    return this.toListeningState(room);
+  }
+
+  private static beginListening(room: Room): void {
+    if (!room.game) throw new Error("Game state missing");
     room.game.submissionGroups = this.shuffleGroups(this.groupSubmissions(Object.values(room.game.submissions)));
     room.game.listeningIndex = 0;
     room.game.listeningFinished = false;
     room.game.listeningReadyPlayerIds = [];
     room.game.phase = "LISTENING";
     room.status = "LISTENING";
-    await repo.saveRoom(room.roomCode, room);
-    return this.toListeningState(room);
   }
 
   static async moveListening(roomCode: string, requesterId: string, direction: "next" | "previous") {
@@ -511,6 +524,10 @@ export default class RoomService {
     const readyIds = new Set(room.game.listeningReadyPlayerIds || []);
     if (ready) readyIds.add(requesterId); else readyIds.delete(requesterId);
     room.game.listeningReadyPlayerIds = [...readyIds];
+    const eligibleIds = this.eligibleListeningReadyPlayers(room).map((item) => item.playerId);
+    if (ready && eligibleIds.length > 0 && eligibleIds.every((id) => readyIds.has(id))) {
+      this.beginVoting(room);
+    }
     await repo.saveRoom(normalizedCode, room);
     return this.toListeningState(room);
   }
@@ -532,12 +549,17 @@ export default class RoomService {
     const eligibleIds = this.eligibleListeningReadyPlayers(room).map((player) => player.playerId);
     const readyCount = (room.game.listeningReadyPlayerIds || []).filter((id) => eligibleIds.includes(id)).length;
     if (eligibleIds.length > 0 && readyCount < 1) throw Object.assign(new Error("Waiting for a ready player"), { code: "LISTENING_READY_REQUIRED" });
+    this.beginVoting(room);
+    await repo.saveRoom(room.roomCode, room);
+    return room.game.votingEndsAt!;
+  }
+
+  private static beginVoting(room: Room): void {
+    if (!room.game) throw new Error("Game state missing");
     room.game.phase = "VOTING";
     room.game.votingStartedAt = Date.now();
     room.game.votingEndsAt = room.game.votingStartedAt + VOTING_DURATION_MS;
     room.status = "VOTING";
-    await repo.saveRoom(room.roomCode, room);
-    return room.game.votingEndsAt;
   }
 
   static async getVotingView(roomCode: string, playerId: string): Promise<VotingView | null> {
@@ -550,15 +572,16 @@ export default class RoomService {
     const player = room.players[playerId];
     if (!player) throw roomNotFound();
     const own = room.game.submissions[playerId];
+    const eligibleVoterIds = this.eligibleVotingPlayerIds(room);
     return {
       ownSubmission: own ? this.toPublicMedia(own) : null,
       groups: room.game.submissionGroups
         .filter((group) => group.submissions.some((submission) => submission.playerId !== playerId))
-        .map((group) => ({ groupId: group.groupId, media: group.publicMedia, canVote: player.isPlaying })),
+        .map((group) => ({ groupId: group.groupId, media: group.publicMedia, canVote: eligibleVoterIds.includes(playerId) })),
       hasVoted: Boolean(room.game.votes[playerId]),
-      canVote: player.isPlaying && room.game.roundParticipantIds.includes(playerId),
+      canVote: eligibleVoterIds.includes(playerId),
       votedPlayers: player.isHost ? Object.keys(room.game.votes) : [],
-      eligiblePlayersCount: room.game.roundParticipantIds.length,
+      eligiblePlayersCount: eligibleVoterIds.length,
       votingStartedAt: room.game.votingStartedAt || Date.now(),
       votingEndsAt: room.game.votingEndsAt || Date.now(),
     };
@@ -572,7 +595,7 @@ export default class RoomService {
       await this.closeVoting(normalizedCode, true);
       throw Object.assign(new Error("Voting time has ended"), { code: "VOTING_CLOSED" });
     }
-    if (!room.players[playerId]?.isPlaying || !room.game.roundParticipantIds.includes(playerId)) throw Object.assign(new Error("Player is not active this round"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
+    if (!this.eligibleVotingPlayerIds(room).includes(playerId)) throw Object.assign(new Error("Player is not eligible to vote this round"), { code: "PLAYER_NOT_ACTIVE_THIS_ROUND" });
     if (room.game.votes[playerId]) throw Object.assign(new Error("Player already voted"), { code: "ALREADY_VOTED" });
     if (vote.likedGroupId === vote.dislikedGroupId) throw Object.assign(new Error("Votes must target different groups"), { code: "INVALID_VOTE" });
     const liked = room.game.submissionGroups.find((group) => group.groupId === vote.likedGroupId);
@@ -605,7 +628,7 @@ export default class RoomService {
     if (!room?.game) throw roomNotFound();
     if (room.status === "ROUND_RESULTS") return room.game.roundResult;
     if (room.status !== "VOTING") throw Object.assign(new Error("Voting is not active"), { code: "INVALID_PHASE" });
-    const allVoted = room.game.roundParticipantIds.every((id) => Boolean(room.game?.votes[id]));
+    const allVoted = this.eligibleVotingPlayerIds(room).every((id) => Boolean(room.game?.votes[id]));
     if (!force && !allVoted && Date.now() < (room.game.votingEndsAt || 0)) return null;
     const ranking = this.buildRoundRanking(room);
     room.game.cumulativeVotes ||= {};
@@ -712,6 +735,11 @@ export default class RoomService {
   private static eligibleListeningReadyPlayers(room: Room) {
     if (!room.game) return [];
     return room.game.roundParticipantIds.map((id) => room.players[id]).filter((player): player is Player => Boolean(player && !player.isHost && player.isPlaying && player.participationStatus === "ACTIVE"));
+  }
+
+  private static eligibleVotingPlayerIds(room: Room): string[] {
+    if (!room.game) return [];
+    return [...new Set([...room.game.roundParticipantIds, room.host])].filter((id) => Boolean(room.players[id]));
   }
 
   private static async requireHostPhase(roomCode: string, requesterId: string, status: string): Promise<Room> {

@@ -17,11 +17,14 @@ export const openApiDocument = {
     "game:restart": {
       description: "Host cria uma nova sessão na mesma room após GAME_RESULTS.",
     },
+    "submission:create": {
+      description: "Player ACTIVE envia sua escolha. Quando todos os participantes da rodada submetem, LISTENING começa automaticamente.",
+    },
     "listening:next / listening:previous": {
       description: "Eventos legados rejeitados: cada player navega localmente pela playlist recebida.",
     },
     "listening:ready:set": {
-      description: "Player non-host ACTIVE marca ou desfaz readiness a qualquer momento durante LISTENING.",
+      description: "Player non-host ACTIVE marca ou desfaz readiness durante LISTENING. Quando todos os elegíveis ficam prontos, VOTING começa automaticamente com o timer oficial de 60 segundos.",
       payload: { type: "object", required: ["ready"], properties: { ready: { type: "boolean" } } },
     },
     "listening:state": {
@@ -30,6 +33,9 @@ export const openApiDocument = {
     },
     "voting:start": {
       description: "Host inicia VOTING; exige ao menos um non-host elegível pronto, exceto quando não existe non-host elegível.",
+    },
+    "vote:submit": {
+      description: "Participantes e o host, inclusive host-only, podem confirmar um like e um dislike em mídias elegíveis durante os 60 segundos.",
     },
     "game:finished": {
       description: "Emitido somente após a consolidação Mongo da sessão; contém leaderboard e análise final.",

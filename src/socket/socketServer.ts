@@ -49,6 +49,16 @@ export function initSocket(httpServer: HttpServer) {
     return true;
   };
 
+  const scheduleVotingClose = (roomCode: string, votingEndsAt: number) => {
+    const timer = setTimeout(() => {
+      void runRoomAction(roomCode, async () => {
+        try { await emitRoundResult(roomCode, true); }
+        catch (error) { if ((error as { code?: string }).code !== "INVALID_PHASE") log.error({ roomCode }, "failed to close voting phase"); }
+      });
+    }, Math.max(0, votingEndsAt - Date.now()) + 50);
+    timer.unref();
+  };
+
   const connectPlayer = async (socket: Socket, payload: Record<string, unknown>) => {
     if (socket.data.presenceKey) return;
     const authenticated = await authenticateAndJoin(io, socket, payload);
@@ -213,20 +223,9 @@ export function initSocket(httpServer: HttpServer) {
           });
           const roomState = await RoomService.getPublicRoomState(roomCode);
           io.to(roomCode).emit("room:state", roomState);
-          if (
-            roomState.game &&
-            roomState.game.playersCount > 0 &&
-            roomState.game.submittedCount === roomState.game.playersCount
-          ) {
-            const listening = await RoomService.startListening(
-              roomCode,
-              roomState.host.playerId,
-            );
-            io.to(roomCode).emit("listening:state", listening);
-            io.to(roomCode).emit(
-              "room:state",
-              await RoomService.getPublicRoomState(roomCode),
-            );
+          if (roomState.status === "LISTENING") {
+            const listening = await RoomService.getListeningState(roomCode);
+            if (listening) io.to(roomCode).emit("listening:state", listening);
           }
         });
       } catch (error) { socketError(socket, error); }
@@ -261,7 +260,16 @@ export function initSocket(httpServer: HttpServer) {
       if (!roomCode || !requesterId || typeof payload?.ready !== "boolean") return socketError(socket, Object.assign(new Error("Invalid ready payload"), { code: "INVALID_PAYLOAD" }));
       try {
         await runRoomAction(roomCode, async () => {
-          io.to(roomCode).emit("listening:state", await RoomService.setListeningReady(roomCode, requesterId, payload.ready!));
+          const listeningState = await RoomService.setListeningReady(roomCode, requesterId, payload.ready!);
+          const roomState = await RoomService.getPublicRoomState(roomCode);
+          if (roomState.status === "VOTING") {
+            io.to(roomCode).emit("room:state", roomState);
+            const votingView = await RoomService.getVotingView(roomCode, requesterId);
+            await emitVotingViews(roomCode);
+            if (votingView) scheduleVotingClose(roomCode, votingView.votingEndsAt);
+          } else {
+            io.to(roomCode).emit("listening:state", listeningState);
+          }
         });
       } catch (error) { socketError(socket, error); }
     });
@@ -274,13 +282,7 @@ export function initSocket(httpServer: HttpServer) {
           const votingEndsAt = await RoomService.startVoting(roomCode, requesterId);
           io.to(roomCode).emit("room:state", await RoomService.getPublicRoomState(roomCode));
           await emitVotingViews(roomCode);
-          const timer = setTimeout(() => {
-            void runRoomAction(roomCode, async () => {
-              try { await emitRoundResult(roomCode, true); }
-              catch (error) { if ((error as { code?: string }).code !== "INVALID_PHASE") log.error({ roomCode }, "failed to close voting phase"); }
-            });
-          }, Math.max(0, votingEndsAt - Date.now()) + 50);
-          timer.unref();
+          scheduleVotingClose(roomCode, votingEndsAt);
         });
       } catch (error) { socketError(socket, error); }
     });

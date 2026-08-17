@@ -389,7 +389,7 @@ describe("room player lifecycle", () => {
     const luizView = await RoomService.getVotingView(host.roomCode, luiz.player.playerId);
     expect(luizView?.groups.map((group) => group.media.title)).toEqual(["Nightcall"]);
     const hostView = await RoomService.getVotingView(host.roomCode, host.player.playerId);
-    expect(hostView).toMatchObject({ canVote: false, ownSubmission: null });
+    expect(hostView).toMatchObject({ canVote: true, ownSubmission: null, eligiblePlayersCount: 4 });
   });
 
   it("preserves listening and voting state for reconnects", async () => {
@@ -418,6 +418,7 @@ describe("room player lifecycle", () => {
     await RoomService.submitChoice(host.roomCode, host.player.playerId, { source: "SPOTIFY", title: "Host song", artist: "Host artist", spotifyTrackId: "host-track" });
     await RoomService.submitChoice(host.roomCode, carol.player.playerId, { source: "SPOTIFY", title: "Carol song", artist: "Carol artist", spotifyTrackId: "carol-track" });
     await RoomService.submitChoice(host.roomCode, bruno.player.playerId, { source: "SPOTIFY", title: "Bruno song", artist: "Bruno artist", spotifyTrackId: "bruno-track" });
+    expect(await RoomService.getPublicRoomState(host.roomCode)).toMatchObject({ status: "LISTENING", game: { phase: "LISTENING", submittedCount: 3 } });
 
     const initial = await RoomService.startListening(host.roomCode, host.player.playerId);
     expect(initial).toMatchObject({ index: 0, total: 3, finished: false, readyCount: 0, eligibleReadyCount: 2, canStartVoting: false });
@@ -437,7 +438,11 @@ describe("room player lifecycle", () => {
     const unready = await RoomService.setListeningReady(host.roomCode, carol.player.playerId, false);
     expect(unready).toMatchObject({ readyCount: 0, canStartVoting: false });
     await RoomService.setListeningReady(host.roomCode, bruno.player.playerId, true);
-    expect((await RoomService.startVoting(host.roomCode, host.player.playerId)) - Date.now()).toBe(60_000);
+    await RoomService.setListeningReady(host.roomCode, carol.player.playerId, true);
+    const automaticallyStarted = await RoomService.getPublicRoomState(host.roomCode);
+    expect(automaticallyStarted).toMatchObject({ status: "VOTING", game: { phase: "VOTING" } });
+    const votingView = await RoomService.getVotingView(host.roomCode, carol.player.playerId);
+    expect((votingView?.votingEndsAt || 0) - Date.now()).toBe(60_000);
   });
 
   it("allows the host to start voting when there are zero eligible non-host players", async () => {
